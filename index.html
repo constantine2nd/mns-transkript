@@ -30,6 +30,7 @@
   </header>
 
   <main id="start" class="view">
+    <h1 class="sr-only" data-i18n="appName"></h1>
     <label id="drop" class="drop" tabindex="0">
       <input id="file" type="file" accept=".zip,application/zip" hidden>
       <span class="drop-title" data-i18n="dropTitle"></span>
@@ -111,16 +112,16 @@
     <ol id="lines" class="lines"></ol>
   </main>
 
-  <dialog id="dlg-confirm" class="dlg">
+  <dialog id="dlg-confirm" class="dlg" aria-labelledby="confirm-title" aria-describedby="confirm-text">
     <h2 id="confirm-title"></h2>
     <p id="confirm-text"></p>
     <div class="dlg-actions" id="confirm-actions"></div>
   </dialog>
 
-  <dialog id="dlg-asr" class="dlg wide">
+  <dialog id="dlg-asr" class="dlg wide" aria-labelledby="asr-dlg-title">
     <h2 id="asr-dlg-title" data-i18n="asrRunning"></h2>
     <p id="asr-file-name" class="muted"></p>
-    <p id="asr-phase"></p>
+    <p id="asr-phase" role="status"></p>
     <progress id="asr-bar" class="asr-bar" max="1" value="0"></progress>
     <p id="asr-detail" class="muted small"></p>
     <p id="asr-last" class="asr-last" hidden></p>
@@ -128,8 +129,8 @@
     <div class="dlg-actions"><button id="asr-stop" class="btn" type="button" data-i18n="asrStop"></button></div>
   </dialog>
 
-  <dialog id="dlg-settings" class="dlg">
-    <h2 data-i18n="settings"></h2>
+  <dialog id="dlg-settings" aria-labelledby="settings-title" class="dlg">
+    <h2 id="settings-title" data-i18n="settings"></h2>
     <h3 data-i18n="gemTitle"></h3>
     <p class="muted" data-i18n="gemText"></p>
     <label class="field"><span data-i18n="gemKey"></span>
@@ -146,8 +147,8 @@
     </div>
   </dialog>
 
-  <dialog id="dlg-help" class="dlg">
-    <h2 data-i18n="helpTitle"></h2>
+  <dialog id="dlg-help" aria-labelledby="help-title" class="dlg">
+    <h2 id="help-title" data-i18n="helpTitle"></h2>
     <table class="keys">
       <tr><td><kbd>Ctrl</kbd>+<kbd>Space</kbd> · <kbd>Esc</kbd></td><td data-i18n="helpPlay"></td></tr>
       <tr><td><kbd>Alt</kbd>+<kbd>↑</kbd> / <kbd>Alt</kbd>+<kbd>↓</kbd></td><td data-i18n="helpPrevNext"></td></tr>
@@ -159,17 +160,17 @@
     <div class="dlg-actions"><button class="btn" type="button" data-close data-i18n="close"></button></div>
   </dialog>
 
-  <dialog id="dlg-history" class="dlg wide">
-    <h2 data-i18n="historyTitle"></h2>
+  <dialog id="dlg-history" aria-labelledby="history-title" class="dlg wide">
+    <h2 id="history-title" data-i18n="historyTitle"></h2>
     <p class="muted" data-i18n="historyText"></p>
     <ul id="history-list" class="hist-list"></ul>
     <div class="dlg-actions"><button class="btn" type="button" data-close data-i18n="close"></button></div>
   </dialog>
 
-  <dialog id="dlg-ai-request" class="dlg wide">
-    <h2 data-i18n="aiRequestTitle"></h2>
+  <dialog id="dlg-ai-request" aria-labelledby="ai-request-title" class="dlg wide">
+    <h2 id="ai-request-title" data-i18n="aiRequestTitle"></h2>
     <p id="ai-request-note" class="muted"></p>
-    <textarea id="ai-request-text" class="mono" rows="14" readonly></textarea>
+    <textarea id="ai-request-text" class="mono" rows="14" readonly aria-labelledby="ai-request-title"></textarea>
     <p id="ai-request-msg" class="msg" role="status" hidden></p>
     <div class="dlg-actions">
       <button id="ai-gemini" class="btn primary" type="button" hidden></button>
@@ -179,10 +180,10 @@
     </div>
   </dialog>
 
-  <dialog id="dlg-ai-import" class="dlg wide">
-    <h2 data-i18n="aiImportTitle"></h2>
+  <dialog id="dlg-ai-import" aria-labelledby="ai-import-title" class="dlg wide">
+    <h2 id="ai-import-title" data-i18n="aiImportTitle"></h2>
     <p class="muted" data-i18n="aiImportText"></p>
-    <textarea id="ai-answer" class="mono" rows="12" data-i18n-placeholder="aiPastePlaceholder"></textarea>
+    <textarea id="ai-answer" class="mono" rows="12" data-i18n-placeholder="aiPastePlaceholder" aria-labelledby="ai-import-title"></textarea>
     <p id="ai-import-msg" class="msg warn" role="status" hidden></p>
     <div class="dlg-actions">
       <button id="ai-check" class="btn primary" type="button" data-i18n="aiCheck"></button>
@@ -191,9 +192,9 @@
     </div>
   </dialog>
 
-  <dialog id="dlg-ai-review" class="dlg wide review">
+  <dialog id="dlg-ai-review" aria-labelledby="ai-review-title" class="dlg wide review">
     <div class="review-head">
-      <h2 data-i18n="aiReviewTitle"></h2>
+      <h2 id="ai-review-title" data-i18n="aiReviewTitle"></h2>
       <p id="review-summary" class="muted"></p>
       <label class="coverage"><span id="review-coverage"></span><progress id="review-progress" max="1" value="0"></progress></label>
       <p id="review-partial" class="msg" hidden></p>

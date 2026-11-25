@@ -525,21 +525,26 @@ function lineRow(i, tags) {
   const time = el('button', 'ltime', clock(s.start));
   time.type = 'button';
   time.title = t('playLine');
+  time.setAttribute('aria-label', t('playFrom', clock(s.start)));
   time.addEventListener('click', () => playFrom(i));
   const marks = el('span', 'tags');
   for (const g of tags.filter((g) => tagCovers(g, s))) {
     const m = el('span', g.kind === 'IMPORTANT' ? 'tag important' : 'tag', g.kind === 'IMPORTANT' ? '★' : '•');
     m.title = (g.label && String(g.label).trim()) || (g.kind === 'IMPORTANT' ? t('tagImportant') : t('tagOther'));
     if (g.note) m.title += ` — ${g.note}`;
+    m.setAttribute('role', 'img');
+    m.setAttribute('aria-label', m.title);
     marks.append(m);
   }
   const ta = el('textarea', 'ltext');
+  ta.setAttribute('aria-label', t('lineLabel', i + 1, clock(s.start)));
   ta.rows = 1;
   ta.spellcheck = true;
   ta.lang = 'sr';
   ta.value = display(s.text);
   ta.addEventListener('input', () => onInput(i, ta));
   ta.addEventListener('focus', () => { S.focused = i; });
+  ta.addEventListener('blur', () => nameLine(Number(li.dataset.i)));
   ta.addEventListener('keydown', (e) => onLineKey(e, i, ta));
   const join = el('button', 'ljoin', '⤓');
   join.type = 'button';
@@ -568,8 +573,22 @@ function markChanged() {
     if (!row) continue;
     const changed = same && (orig[i].text !== S.segs[i].text || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end);
     row.classList.toggle('changed', changed);
-    row.title = changed ? t('lineChanged') : '';
+    nameLine(i, row);
   }
+}
+
+/**
+ * A line's name for screen readers ("Red 3, 00:12, izmenjen red") and its tooltip. Not renamed while it has focus:
+ * a name change makes some screen readers read the line again on every keystroke; it is renamed on leaving it.
+ */
+function nameLine(i, row = rowOf(i)) {
+  if (!row) return;
+  const changed = row.classList.contains('changed');
+  row.title = changed ? t('lineChanged') : '';
+  const ta = row.querySelector('textarea');
+  if (!ta || document.activeElement === ta) return;
+  const name = t('lineLabel', i + 1, clock(S.segs[i].start));
+  ta.setAttribute('aria-label', changed ? `${name}, ${t('lineChanged')}` : name);
 }
 
 function focusLine(i, caret = -1) {
@@ -596,6 +615,7 @@ function onInput(i, ta) {
   if (orig.length === S.segs.length) {
     const changed = orig[i].text !== ta.value || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end;
     row.classList.toggle('changed', changed);
+    row.title = changed ? t('lineChanged') : '';
   }
   edited();
 }
@@ -1160,6 +1180,7 @@ function openReview(r) {
     const box = el('input');
     box.type = 'checkbox';
     box.checked = true;
+    box.setAttribute('aria-label', t('aiAcceptLine', ai.id(c.index, n)));
     box.addEventListener('change', () => {
       if (box.checked) S.review.checked.add(c.index); else S.review.checked.delete(c.index);
       updateApply();
