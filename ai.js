@@ -13,8 +13,12 @@ export function answerFileName(base) {
   return `${base} - AI answer.txt`;
 }
 
-/** @param {{text: string}[]} segments  @param {boolean} latin  @param {string} base */
-export function request(segments, latin, base) {
+/**
+ * @param {{text: string}[]} segments  @param {boolean} latin  @param {string} base
+ * @param {{direct?: boolean}} [opts] direct: for the Gemini API (web only, not in the phone's AiExchange): the
+ *   answer comes back as the reply's text, so the lines are asked for as plain text instead of a file.
+ */
+export function request(segments, latin, base, { direct = false } = {}) {
   const n = segments.length;
   const script = latin ? 'Latin' : 'Cyrillic';
   const otherScript = latin ? 'Cyrillic' : 'Latin';
@@ -37,14 +41,22 @@ export function request(segments, latin, base) {
     '- Do not stop early. If all lines do not fit in one reply, end after a complete line and',
     '  write "Continue from #NNN" after it; I will ask for the rest.',
     '- Do not add dialogue dashes, quotation marks, speaker names or any other markup.',
-    `- Return the result as a downloadable plain-text file named "${answerFileName(base)}"`,
-    '  (UTF-8), containing only the corrected lines, nothing else.',
-    '- If you cannot create files, output only the lines inside one code block instead,',
-    '  with no comments before or after.',
-    '',
-    'After the file (or code block), add one short list titled "Doubtful" with the ids of',
-    'lines you marked with [?...], or "none". Do not put this list inside the file.',
-    '',
+    ...(direct ? [
+      '- Reply with the corrected lines only, as plain text: no code block, no comments before them.',
+      '',
+      'After the lines, add one short list titled "Doubtful" with the ids of lines you marked',
+      'with [?...], or "none".',
+      '',
+    ] : [
+      `- Return the result as a downloadable plain-text file named "${answerFileName(base)}"`,
+      '  (UTF-8), containing only the corrected lines, nothing else.',
+      '- If you cannot create files, output only the lines inside one code block instead,',
+      '  with no comments before or after.',
+      '',
+      'After the file (or code block), add one short list titled "Doubtful" with the ids of',
+      'lines you marked with [?...], or "none". Do not put this list inside the file.',
+      '',
+    ]),
   ].join('\n');
   out += '\n';
   out += n === 0 ? 'Lines: 0\n' : `Lines: ${n} (${id(0, n)}-${id(n - 1, n)})\n`;

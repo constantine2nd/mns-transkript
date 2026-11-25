@@ -7,6 +7,7 @@ import * as ai from './ai.js';
 import * as store from './store.js';
 import * as hist from './history.js';
 import * as asr from './asr.js';
+import * as gemini from './gemini.js';
 import { SAMPLE_RATE, windows, isSilent, placePieces, mergeSentences, newTranscriptId } from './speech.js';
 import { DOWNLOAD_MB, ENGINE } from './asr-model.js';
 
@@ -937,7 +938,157 @@ function aiRequest() {
   $('#ai-request-text').value = text;
   $('#ai-request-note').textContent = t('aiRequestText', ai.answerFileName(base));
   showMsg($('#ai-request-msg'), '');
+  updateGeminiButton();
   $('#dlg-ai-request').showModal();
+}
+
+// ---------------- Gemini with the user's own key
+
+/** The running send's AbortController, or null. */
+let gemAbort = null;
+
+function updateGeminiButton() {
+  const g = gemini.loadSettings();
+  const b = $('#ai-gemini');
+  b.hidden = !g;
+  if (g && !gemAbort) b.textContent = `${t('gemSend')} (${g.model})`;
+}
+
+function gemMessage(e, model) {
+  if (e instanceof gemini.GeminiError) {
+    if (e.code === 'gemNoModel') return `${t('gemNoModel', model)} (${e.detail})`;
+    // Google's text for these is long (a list of every quota); ours says it all.
+    if (e.code === 'gemNotInTier') return t('gemNotInTier', model);
+    if (e.code === 'gemQuotaDay') return t('gemQuotaDay', model);
+    if (e.code === 'gemBusy') return t('gemBusy');
+    if (e.code === 'gemNetwork' || e.code === 'gemFailed' || e.code === 'gemBlocked') return t(e.code, e.detail);
+    // Google's own words after ours: which limit, which error.
+    return e.detail ? `${t(e.code)} (${e.detail})` : t(e.code);
+  }
+  return t('gemFailed', e?.message || String(e));
+}
+
+async function aiGemini() {
+  if (gemAbort) { gemAbort.abort(); return; }
+  const g = gemini.loadSettings();
+  if (!g) { openSettings(); return; }
+  const shown = displayedSegs();
+  if (shown.length === 0) { flash(t('aiNothing'), true); return; }
+  const sent = ai.lines(shown);
+  const n = sent.length;
+  const prompt = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), baseName(S.doc.title), { direct: true });
+  const msg = $('#ai-request-msg');
+  const btn = $('#ai-gemini');
+  gemAbort = new AbortController();
+  btn.textContent = t('gemCancel');
+  $('#ai-copy').disabled = true;
+  $('#ai-download').disabled = true;
+  const t0 = Date.now();
+  let round = 1;
+  let waitUntil = 0;
+  let waitWhy = 'gemQuota';
+  const tick = () => {
+    const left = Math.ceil((waitUntil - Date.now()) / 1000);
+    showMsg(msg, left > 0 ? t(waitWhy === 'gemBusy' ? 'gemBusyWaiting' : 'gemWaiting', left)
+      : t(round === 1 ? 'gemSending' : 'gemSendingRound', round === 1 ? g.model : round, Math.round((Date.now() - t0) / 1000)));
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  const docId = S.doc.id;
+  let answer = null;
+  try {
+    answer = await gemini.correct(g.key, g.model, prompt, (all) => {
+      const a = ai.parseAnswer(all, sent);
+      return a.type === 'ok' ? a.continueFrom : null;
+    }, {
+      signal: gemAbort.signal,
+      onRound: (r) => { round = r; tick(); },
+      onWait: (ms, why) => { waitUntil = Date.now() + ms; waitWhy = why; tick(); },
+      idOf: (from) => ai.id(from - 1, n),
+    });
+  } catch (e) {
+    console.error(e);
+    showMsg(msg, e?.name === 'AbortError' ? t('gemCancelled') : gemMessage(e, g.model), e?.name !== 'AbortError');
+  } finally {
+    clearInterval(timer);
+    gemAbort = null;
+    $('#ai-copy').disabled = false;
+    $('#ai-download').disabled = false;
+    updateGeminiButton();
+  }
+  if (answer == null || S.doc?.id !== docId) return;
+  // The answer goes through the same check and review as a pasted one.
+  $('#dlg-ai-request').close();
+  aiOpenImport();
+  $('#ai-answer').value = answer;
+  aiCheck(answer);
+}
+
+function fillModels(models, selected) {
+  const sel = $('#gem-model');
+  sel.replaceChildren();
+  const list = models.length ? models : [{ id: selected, label: selected }];
+  for (const m of list) {
+    const o = el('option', '', m.label);
+    o.value = m.id;
+    sel.append(o);
+  }
+  sel.value = list.some((m) => m.id === selected) ? selected : list[0].id;
+}
+
+function openSettings() {
+  const g = gemini.loadSettings();
+  const key = $('#gem-key');
+  key.value = '';
+  key.placeholder = g ? t('gemKeySaved', gemini.maskKey(g.key)) : t('gemKeyPlaceholder');
+  fillModels(g?.models ?? [], g?.model ?? gemini.DEFAULT_MODEL);
+  $('#gem-model').disabled = !g;
+  $('#gem-clear').hidden = !g;
+  showMsg($('#gem-msg'), '');
+  $('#dlg-settings').showModal();
+  // The key's models can change (new ones, a different tier): refresh the list quietly, keeping the choice.
+  if (g) {
+    gemini.listModels(g.key).then((models) => {
+      const now = gemini.loadSettings();
+      if (!models.length || !now || now.key !== g.key || !$('#dlg-settings').open) return;
+      const model = models.some((m) => m.id === now.model) ? now.model : models[0].id;
+      gemini.saveSettings({ key: now.key, model, models });
+      fillModels(models, model);
+    }).catch(() => { /* the saved list stays */ });
+  }
+}
+
+async function saveGemini() {
+  const msg = $('#gem-msg');
+  const saved = gemini.loadSettings();
+  const key = $('#gem-key').value.trim() || saved?.key || '';
+  if (!key) { showMsg(msg, t('gemNoKeyTyped'), true); return; }
+  showMsg(msg, t('gemChecking'));
+  $('#gem-save').disabled = true;
+  try {
+    const models = await gemini.listModels(key);
+    if (!models.length) { showMsg(msg, t('gemNoModels'), true); return; }
+    const wanted = $('#gem-model').disabled ? (saved?.model ?? gemini.DEFAULT_MODEL) : $('#gem-model').value;
+    fillModels(models, models.some((m) => m.id === wanted) ? wanted : models[0].id);
+    const model = $('#gem-model').value;
+    gemini.saveSettings({ key, model, models });
+    $('#gem-key').value = '';
+    $('#gem-key').placeholder = t('gemKeySaved', gemini.maskKey(key));
+    $('#gem-model').disabled = false;
+    $('#gem-clear').hidden = false;
+    showMsg(msg, t('gemSaved', model));
+  } catch (e) {
+    console.error(e);
+    showMsg(msg, gemMessage(e, ''), true);
+  } finally {
+    $('#gem-save').disabled = false;
+  }
+}
+
+function clearGemini() {
+  gemini.clearSettings();
+  openSettings();
+  showMsg($('#gem-msg'), t('gemCleared'));
 }
 
 async function aiCopy() {
@@ -1150,6 +1301,20 @@ function wire() {
   $('#version-chip').addEventListener('click', openHistory);
   $('#ai-request').addEventListener('click', aiRequest);
   $('#ai-copy').addEventListener('click', aiCopy);
+  $('#ai-gemini').addEventListener('click', aiGemini);
+  $('#dlg-ai-request').addEventListener('close', () => gemAbort?.abort());
+  $('#settings').addEventListener('click', openSettings);
+  $('#gem-save').addEventListener('click', saveGemini);
+  $('#gem-clear').addEventListener('click', clearGemini);
+  $('#gem-key').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveGemini(); } });
+  $('#gem-model').addEventListener('change', () => {
+    const g = gemini.loadSettings();
+    if (g) {
+      gemini.saveSettings({ ...g, model: $('#gem-model').value });
+      updateGeminiButton();
+      showMsg($('#gem-msg'), t('gemModelSaved', $('#gem-model').value));
+    }
+  });
   $('#ai-download').addEventListener('click', () => downloadText($('#ai-request-text').value, `${baseName(S.doc.title)} - AI request.txt`));
   $('#ai-import').addEventListener('click', aiOpenImport);
   $('#ai-check').addEventListener('click', () => aiCheck($('#ai-answer').value));

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#ffc11b">
   <title>Moj Novi Sad — Transkript</title>
@@ -25,6 +25,7 @@
         <span class="version" id="app-version"></span>
       </div>
       <button id="install" class="btn primary install" type="button" data-i18n="install" hidden></button>
+      <button id="settings" class="btn ghost settings" type="button" data-i18n="settings"></button>
     </div>
   </header>
 
@@ -127,6 +128,24 @@
     <div class="dlg-actions"><button id="asr-stop" class="btn" type="button" data-i18n="asrStop"></button></div>
   </dialog>
 
+  <dialog id="dlg-settings" class="dlg">
+    <h2 data-i18n="settings"></h2>
+    <h3 data-i18n="gemTitle"></h3>
+    <p class="muted" data-i18n="gemText"></p>
+    <label class="field"><span data-i18n="gemKey"></span>
+      <input id="gem-key" type="password" autocomplete="off" spellcheck="false" data-i18n-placeholder="gemKeyPlaceholder">
+    </label>
+    <label class="field"><span data-i18n="gemModel"></span><select id="gem-model"></select></label>
+    <p id="gem-msg" class="msg" role="status" hidden></p>
+    <p class="muted small" data-i18n="gemPrivacy"></p>
+    <div class="dlg-actions">
+      <button id="gem-clear" class="btn ghost" type="button" data-i18n="gemClear" hidden></button>
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close data-i18n="close"></button>
+      <button id="gem-save" class="btn primary" type="button" data-i18n="gemSave"></button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-help" class="dlg">
     <h2 data-i18n="helpTitle"></h2>
     <table class="keys">
@@ -153,6 +172,7 @@
     <textarea id="ai-request-text" class="mono" rows="14" readonly></textarea>
     <p id="ai-request-msg" class="msg" role="status" hidden></p>
     <div class="dlg-actions">
+      <button id="ai-gemini" class="btn primary" type="button" hidden></button>
       <button id="ai-copy" class="btn primary" type="button" data-i18n="copy"></button>
       <button id="ai-download" class="btn" type="button" data-i18n="download"></button>
       <button class="btn ghost" type="button" data-close data-i18n="close"></button>
