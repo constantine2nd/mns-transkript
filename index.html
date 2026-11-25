@@ -36,6 +36,18 @@
       <span class="btn primary" data-i18n="pickFile"></span>
     </label>
     <p id="start-msg" class="msg" role="status" hidden></p>
+    <section id="asr-card" class="asr-card" hidden>
+      <div class="asr-text">
+        <h2 data-i18n="asrTitle"></h2>
+        <p class="muted" data-i18n="asrHint"></p>
+        <p id="asr-model" class="muted small"></p>
+        <p id="asr-why" class="asr-why" hidden></p>
+      </div>
+      <div class="asr-actions">
+        <label id="asr-pick" class="btn primary" hidden><input id="asr-file" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.aac,.flac,.amr,.3gp" hidden><span data-i18n="asrPick"></span></label>
+        <button id="asr-delete-model" class="btn ghost small" type="button" data-i18n="asrDeleteModel" hidden></button>
+      </div>
+    </section>
     <section class="saved">
       <h2 data-i18n="savedTitle"></h2>
       <ul id="saved-list" class="saved-list"></ul>
@@ -102,6 +114,17 @@
     <h2 id="confirm-title"></h2>
     <p id="confirm-text"></p>
     <div class="dlg-actions" id="confirm-actions"></div>
+  </dialog>
+
+  <dialog id="dlg-asr" class="dlg wide">
+    <h2 id="asr-dlg-title" data-i18n="asrRunning"></h2>
+    <p id="asr-file-name" class="muted"></p>
+    <p id="asr-phase"></p>
+    <progress id="asr-bar" class="asr-bar" max="1" value="0"></progress>
+    <p id="asr-detail" class="muted small"></p>
+    <p id="asr-last" class="asr-last" hidden></p>
+    <p class="muted small" data-i18n="asrStopHint"></p>
+    <div class="dlg-actions"><button id="asr-stop" class="btn" type="button" data-i18n="asrStop"></button></div>
   </dialog>
 
   <dialog id="dlg-help" class="dlg">

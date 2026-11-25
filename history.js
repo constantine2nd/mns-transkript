@@ -42,9 +42,10 @@ export function newId(taken = new Set()) {
   }
 }
 
-/** The v1 entry an empty history stands for (rule 1). */
+/** The v1 entry an empty history stands for (rule 1): made on the phone, or here for a recording transcribed here. */
 export function originalEntry(transcript) {
-  return { id: ORIGINAL_ID, n: 1, at: Number(transcript.createdAt) || 0, source: 'original', device: 'phone', segments: null };
+  const device = transcript.origin === 'web' ? 'web' : 'phone';
+  return { id: ORIGINAL_ID, n: 1, at: Number(transcript.createdAt) || 0, source: 'original', device, segments: null };
 }
 
 /** The history to show: the stored one, or v1 alone when it is missing or empty (rule 1). */

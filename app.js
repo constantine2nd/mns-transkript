@@ -6,6 +6,9 @@ import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment
 import * as ai from './ai.js';
 import * as store from './store.js';
 import * as hist from './history.js';
+import * as asr from './asr.js';
+import { SAMPLE_RATE, windows, isSilent, placePieces, mergeSentences, newTranscriptId } from './speech.js';
+import { DOWNLOAD_MB, ENGINE } from './asr-model.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -149,10 +152,11 @@ async function renderSaved() {
     if (!d.hasAudio) parts.push(t('noAudio'));
     meta.textContent = parts.join(' · ');
     info.append(meta);
-    if (d.currentFp && d.currentFp !== d.loadedFp) info.append(el('span', 'badge', t('edited')));
-    const open = el('button', 'btn primary small', t('open'));
+    if (d.currentFp && d.currentFp !== d.loadedFp && !d.asr) info.append(el('span', 'badge', t('edited')));
+    if (d.asr) info.append(el('span', 'badge unsure', t('asrUnfinished', asrPercent(d))));
+    const open = el('button', 'btn primary small', d.asr ? t('asrResume') : t('open'));
     open.type = 'button';
-    open.addEventListener('click', () => openDoc(d.id));
+    open.addEventListener('click', () => (d.asr ? runAsr(d.id) : openDoc(d.id)));
     const del = el('button', 'btn ghost small', t('delete'));
     del.type = 'button';
     del.addEventListener('click', async () => {
@@ -167,6 +171,7 @@ async function renderSaved() {
 }
 
 async function importFile(file) {
+  if (isAudio(file)) { await transcribeFile(file); return; }
   const msg = $('#start-msg');
   showMsg(msg, t('loading'));
   try {
@@ -216,11 +221,212 @@ async function importFile(file) {
   }
 }
 
+// ------------------------------------------------------------------ transcribing in the browser
+
+/** In-browser transcription: ok once support() passed; one run at a time. */
+const ASR = { ok: false, why: '', running: false, stop: false, loading: false, transcriber: null };
+
+const AUDIO_EXT = /\.(m4a|mp3|wav|ogg|oga|opus|aac|flac|amr|3gp|webm|mp4)$/i;
+const isAudio = (f) => (f.type || '').startsWith('audio/') || AUDIO_EXT.test(f.name || '');
+const mb = (bytes) => `${Math.round(bytes / 1e6)} MB`;
+const asrPercent = (d) => {
+  const total = (d.durationMs || 0) * (SAMPLE_RATE / 1000);
+  return total ? Math.min(99, Math.floor((100 * (d.asr.done || 0)) / total)) : 0;
+};
+
+/** Shows the card: the button when this browser can transcribe, else why not. */
+async function setupAsr() {
+  const s = await asr.support();
+  ASR.ok = s.ok;
+  ASR.why = s.ok ? '' : t(s.reason);
+  $('#asr-card').hidden = false;
+  $('#asr-pick').hidden = !s.ok;
+  $('#asr-why').hidden = s.ok;
+  $('#asr-why').textContent = ASR.why;
+  await updateModelLine();
+}
+
+async function updateModelLine() {
+  const m = await asr.modelState();
+  $('#asr-model').textContent = !ASR.ok ? '' : m.downloaded ? t('asrModelReady', mb(m.bytes)) : t('asrModelMissing', DOWNLOAD_MB);
+  $('#asr-delete-model').hidden = !(m.bytes > 0) || ASR.running;
+  return m;
+}
+
+async function deleteModel() {
+  const m = await asr.modelState();
+  if (!(await confirmBox(t('asrDeleteModelTitle'), t('asrDeleteModelText', mb(m.bytes)), t('delete')))) return;
+  ASR.transcriber?.terminate();
+  ASR.transcriber = null;
+  await asr.deleteModel();
+  await updateModelLine();
+  showMsg($('#start-msg'), t('asrModelDeleted'));
+}
+
+/** A new transcript from an audio file: stored with its recording, then transcribed. */
+async function transcribeFile(file) {
+  const msg = $('#start-msg');
+  if (!isAudio(file)) { showMsg(msg, t('asrNotAudio'), true); return; }
+  if (!ASR.ok) { showMsg(msg, ASR.why || t('asrNoWebgpu'), true); return; }
+  if (ASR.running) { showMsg(msg, t('asrBusy'), true); return; }
+  if (!(await asr.modelState()).downloaded
+    && !(await confirmBox(t('asrDownloadTitle'), t('asrDownloadText', DOWNLOAD_MB), t('asrDownload')))) return;
+  const now = new Date();
+  const id = newTranscriptId(now);
+  const title = file.name.replace(/\.[^.]+$/, '') || id;
+  const createdAt = file.lastModified || now.getTime(); // a recording's file date is when it was recorded
+  const transcript = {
+    id, title, createdAt, durationMs: 0, language: 'sr', segments: [], editedSegments: null, history: [],
+    origin: 'web', engine: ENGINE, sourceFile: file.name,
+  };
+  const fp = await fingerprint([]);
+  const doc = {
+    id, title, createdAt, durationMs: 0, transcript, loadedFp: fp, baseFp: fp, baseSegs: null, currentFp: fp,
+    hasAudio: true, savedAt: Date.now(),
+    asr: { done: 0, pieces: [] }, // samples transcribed so far and the model's pieces: what a resume continues from
+  };
+  const blob = file.type ? file : new Blob([file], { type: 'audio/mp4' });
+  await store.putDocWithAudio(doc, blob);
+  store.persist();
+  showMsg(msg, '');
+  await renderSaved();
+  await runAsr(id);
+}
+
+function setAsrPhase(text, fraction) {
+  $('#asr-phase').textContent = text;
+  const bar = $('#asr-bar');
+  if (fraction == null) bar.removeAttribute('value');
+  else bar.value = fraction;
+}
+
+/** Transcribes (or goes on transcribing) the stored transcript `id`, saving after every window. */
+async function runAsr(id) {
+  const msg = $('#start-msg');
+  if (!ASR.ok) { showMsg(msg, ASR.why || t('asrNoWebgpu'), true); return; }
+  if (ASR.running) { showMsg(msg, t('asrBusy'), true); return; }
+  const doc = await store.getDoc(id);
+  if (!doc?.asr) return;
+  ASR.running = true;
+  ASR.stop = false;
+  const dlg = $('#dlg-asr');
+  $('#asr-file-name').textContent = doc.title;
+  $('#asr-detail').textContent = '';
+  $('#asr-last').hidden = true;
+  $('#asr-stop').disabled = false;
+  $('#asr-delete-model').hidden = true;
+  showMsg(msg, '');
+  dlg.showModal();
+  let outcome = 'stopped';
+  try {
+    const downloading = !(await asr.modelState()).downloaded;
+    setAsrPhase(t('asrLoadingModel'), null);
+    if (!ASR.transcriber) ASR.transcriber = new asr.Transcriber();
+    const files = new Map();
+    ASR.loading = true;
+    await ASR.transcriber.load((p) => {
+      if (!downloading || !p.total) return;
+      files.set(p.file, p);
+      let loaded = 0;
+      let total = 0;
+      for (const f of files.values()) { loaded += f.loaded || 0; total += f.total || 0; }
+      total = Math.max(total, DOWNLOAD_MB * 1e6);
+      setAsrPhase(t('asrDownloading', Math.round(loaded / 1e6), Math.round(total / 1e6)), loaded / total);
+    });
+    ASR.loading = false;
+    if (ASR.stop) throw new Error('stopped');
+
+    setAsrPhase(t('asrDecoding'), null);
+    let pcm;
+    try {
+      pcm = await asr.decodeAudio(await store.getAudio(id));
+    } catch (e) {
+      throw new Error(t('asrBadAudio', e.message || String(e)));
+    }
+    const durMs = Math.round((pcm.length / SAMPLE_RATE) * 1000);
+    doc.durationMs = durMs;
+    doc.transcript.durationMs = durMs;
+    const st = doc.asr;
+    const from = Math.min(st.done || 0, pcm.length);
+    const ws = windows(pcm.subarray(from)).map(([a, b]) => [a + from, b + from]);
+    const t0 = performance.now();
+    const showProgress = (doneSamples) => {
+      const done = doneSamples / pcm.length;
+      setAsrPhase(t('asrProgress', clock((doneSamples / SAMPLE_RATE) * 1000), clock(durMs)), done);
+      const audioS = (doneSamples - from) / SAMPLE_RATE;
+      const spentS = (performance.now() - t0) / 1000;
+      if (audioS > 0 && doneSamples < pcm.length) {
+        const speed = spentS / audioS;
+        $('#asr-detail').textContent = t('asrEta', clock(((pcm.length - doneSamples) / SAMPLE_RATE) * speed * 1000), speed.toFixed(2));
+      } else if (doneSamples === from) {
+        $('#asr-detail').textContent = t('asrWarmup');
+      }
+    };
+    showProgress(from);
+    for (const w of ws) {
+      if (ASR.stop) break;
+      if (!isSilent(pcm, w[0], w[1])) {
+        const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1])), pcm, w);
+        st.pieces.push(...placed);
+        if (placed.length) {
+          $('#asr-last').textContent = display(placed.at(-1).text);
+          $('#asr-last').hidden = false;
+        }
+      }
+      st.done = w[1];
+      doc.savedAt = Date.now();
+      await store.putDoc(doc);
+      showProgress(w[1]);
+    }
+    if (!ASR.stop) {
+      const segs = mergeSentences(st.pieces);
+      doc.transcript.segments = segs;
+      delete doc.asr;
+      const fp = await fingerprint(segs);
+      Object.assign(doc, { loadedFp: fp, baseFp: fp, currentFp: fp, savedAt: Date.now() });
+      await store.putDoc(doc);
+      outcome = segs.length ? 'done' : 'empty';
+    }
+  } catch (e) {
+    console.error(e);
+    // a stop while the model loads ends the worker, which fails the load
+    if (!ASR.stop) {
+      outcome = 'failed';
+      showMsg(msg, t('asrFailed', e.message || String(e)), true);
+      ASR.transcriber?.terminate();
+      ASR.transcriber = null;
+    }
+  } finally {
+    ASR.running = false;
+    ASR.loading = false;
+    dlg.close();
+    await updateModelLine();
+  }
+  if (outcome === 'done' || outcome === 'empty') {
+    await openDoc(id);
+    flash(outcome === 'done' ? t('asrDone', S.segs.length) : t('asrEmpty'), outcome === 'empty');
+  } else {
+    await renderSaved();
+  }
+}
+
+function stopAsr() {
+  ASR.stop = true;
+  $('#asr-stop').disabled = true;
+  setAsrPhase(t('asrStopping'), null);
+  // while loading there is no window to finish: end the worker (the next run loads it again)
+  if (ASR.loading) {
+    ASR.transcriber?.terminate();
+    ASR.transcriber = null;
+  }
+}
+
 // ------------------------------------------------------------------ editor
 
 async function openDoc(id) {
   const doc = await store.getDoc(id);
   if (!doc) return;
+  if (doc.asr) { await runAsr(id); return; } // not transcribed to the end yet
   S.doc = doc;
   S.hasEdited = doc.transcript.editedSegments != null;
   S.pendingEdit = false;
@@ -687,6 +893,10 @@ async function restoreVersion(n) {
 // ---------------- toolbar actions
 
 function savePhoneBundle() {
+  if (S.doc.transcript.origin === 'web') {
+    choose(t('saveForPhone'), t('phoneNoWebBorn'), [{ label: t('ok'), value: true, cls: 'primary' }]);
+    return;
+  }
   commitEdit();  // the bundle's transcript.json carries the history, with this session's typing in it
   const tr = S.doc.transcript;
   const editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
@@ -908,7 +1118,11 @@ function onGlobalKey(e) {
 
 function wire() {
   applyI18n();
-  for (const d of document.querySelectorAll('dialog')) closeOnBackdrop(d);
+  for (const d of document.querySelectorAll('dialog:not(#dlg-asr)')) closeOnBackdrop(d);
+  $('#dlg-asr').addEventListener('cancel', (e) => e.preventDefault());
+  $('#asr-stop').addEventListener('click', stopAsr);
+  $('#asr-file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) transcribeFile(f); e.target.value = ''; });
+  $('#asr-delete-model').addEventListener('click', deleteModel);
 
   const drop = $('#drop');
   const file = $('#file');
@@ -977,6 +1191,7 @@ function wire() {
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
   }
   renderSaved();
+  setupAsr().catch((e) => console.warn('transcription', e));
 }
 
 /**
