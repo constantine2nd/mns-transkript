@@ -10,6 +10,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
   <script src="version.js"></script>
   <script src="install.js"></script>
@@ -25,6 +26,7 @@
         <span class="version" id="app-version"></span>
       </div>
       <button id="install" class="btn primary install" type="button" data-i18n="install" hidden></button>
+      <button id="theme" class="btn ghost theme" type="button"><span class="theme-icon" aria-hidden="true"></span> <span class="theme-label"></span></button>
       <button id="settings" class="btn ghost settings" type="button" data-i18n="settings"></button>
     </div>
   </header>
@@ -131,6 +133,14 @@
 
   <dialog id="dlg-settings" aria-labelledby="settings-title" class="dlg">
     <h2 id="settings-title" data-i18n="settings"></h2>
+    <h3 data-i18n="themeTitle"></h3>
+    <label class="field"><span data-i18n="themeChoose"></span>
+      <select id="theme-select">
+        <option value="system" data-i18n="themeSystem"></option>
+        <option value="light" data-i18n="themeLight"></option>
+        <option value="dark" data-i18n="themeDark"></option>
+      </select>
+    </label>
     <h3 data-i18n="gemTitle"></h3>
     <p class="muted" data-i18n="gemText"></p>
     <label class="field"><span data-i18n="gemKey"></span>

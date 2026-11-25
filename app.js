@@ -42,7 +42,7 @@ const S = {
 
 const prefs = loadPrefs();
 function loadPrefs() {
-  const d = { latin: true, autoscroll: true, speed: 1 };
+  const d = { latin: true, autoscroll: true, speed: 1, theme: 'system' };
   try { return { ...d, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return d; }
 }
 function savePrefs() {
@@ -1325,6 +1325,7 @@ function wire() {
   $('#ai-gemini').addEventListener('click', aiGemini);
   $('#dlg-ai-request').addEventListener('close', () => gemAbort?.abort());
   $('#settings').addEventListener('click', openSettings);
+  setupTheme();
   $('#gem-save').addEventListener('click', saveGemini);
   $('#gem-clear').addEventListener('click', clearGemini);
   $('#gem-key').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveGemini(); } });
@@ -1380,6 +1381,29 @@ function wire() {
   }
   renderSaved();
   setupAsr().catch((e) => console.warn('transcription', e));
+}
+
+/** The header's light/dark button (switches to the other one) and the theme choice in Podešavanja. */
+function setupTheme() {
+  const btn = $('#theme');
+  const sel = $('#theme-select');
+  const update = () => {
+    const dark = self.isDark();
+    btn.querySelector('.theme-icon').textContent = dark ? '☀' : '☾';
+    btn.querySelector('.theme-label').textContent = t(dark ? 'themeToLight' : 'themeToDark');
+    // 2.5.3: the visible text is the name (voice control says what it sees); the longer phrase is only a tooltip.
+    btn.title = t(dark ? 'themeToLightAria' : 'themeToDarkAria');
+    sel.value = self.themePref();
+  };
+  const choose = (pref) => {
+    prefs.theme = pref;
+    savePrefs();
+    self.setTheme(pref);
+  };
+  btn.addEventListener('click', () => choose(self.isDark() ? 'light' : 'dark'));
+  sel.addEventListener('change', () => choose(sel.value));
+  self.addEventListener('themechange', update);
+  update();
 }
 
 /**
