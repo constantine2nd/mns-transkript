@@ -116,6 +116,10 @@ export const STRINGS = {
     aiApplied: 'Primenjeno ispravki: {0}',
     // version history
     history: 'Istorija',
+    install: 'Instaliraj',
+    installTitle: 'Instaliraj kao aplikaciju',
+    installIos: 'Na iPhone-u ili iPad-u: dodirni dugme Deli (kvadrat sa strelicom) u Safariju, pa „Dodaj na početni ekran“. Editor se tada otvara kao aplikacija i radi i bez interneta.',
+    installDone: 'Editor je instaliran kao aplikacija.',
     saveVersion: 'Sačuvaj verziju',
     saveVersionHint: 'Trenutni tekst postaje nova verzija (Ctrl+S). Kucanje se čuva samo od sebe, ali verziju praviš ti.',
     versionSaved: 'Sačuvana verzija v{0}',

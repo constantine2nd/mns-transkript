@@ -971,10 +971,38 @@ function wire() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave().then(autoVersion); });
   window.addEventListener('pagehide', () => { flushSave().then(autoVersion); });
 
+  setupInstall();
+
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
   }
   renderSaved();
+}
+
+/**
+ * "Instaliraj": shown when the browser offers installing (Chrome, Edge: the event kept by install.js), or on an
+ * iPhone/iPad Safari as a how-to; hidden once the editor runs as an installed app.
+ */
+function setupInstall() {
+  const btn = $('#install');
+  const pwa = self.pwaInstall || { event: null, standalone: false };
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const update = () => { btn.hidden = pwa.standalone || !(pwa.event || ios); };
+  btn.title = t('installTitle');
+  btn.addEventListener('click', async () => {
+    if (pwa.event) {
+      const e = pwa.event;
+      pwa.event = null; // a prompt can be shown only once
+      e.prompt();
+      await e.userChoice.catch(() => null);
+      update();
+    } else if (ios) {
+      await choose(t('installTitle'), t('installIos'), [{ label: t('ok'), value: true, cls: 'primary' }]);
+    }
+  });
+  window.addEventListener('pwa-installable', update);
+  window.addEventListener('pwa-installed', () => { update(); flash(t('installDone')); });
+  update();
 }
 
 wire();

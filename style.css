@@ -335,3 +335,6 @@ progress { width: 100%; height: 8px; accent-color: var(--brand-strong); }
 .hist-lines li .diff { margin: 0; }
 .hist-lines.only-changed li.same { display: none; }
 .hist-none { font-size: 0.85rem; margin: 6px 0 0; }
+
+/* "Instaliraj" sits at the right end of the header. */
+.brand-inner .install { margin-left: auto; white-space: nowrap; }

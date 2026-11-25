@@ -3,7 +3,7 @@
 importScripts('version.js');
 const VERSION = `mns-transkript-${self.APP_VERSION}`;
 const SHELL = [
-  './', 'index.html', 'version.js', 'style.css', 'app.js', 'i18n.js', 'zip.js', 'bundle.js', 'ai.js', 'text.js', 'store.js', 'history.js',
+  './', 'index.html', 'version.js', 'install.js', 'style.css', 'app.js', 'i18n.js', 'zip.js', 'bundle.js', 'ai.js', 'text.js', 'store.js', 'history.js',
   'manifest.webmanifest', 'assets/mns-logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png',
 ];
 
