@@ -80,13 +80,16 @@ export class Transcriber {
     });
   }
 
-  /** The model's pieces for one window of samples: [{timestamp: [s, e], text}], seconds from the window's start. */
-  run(pcm) {
+  /**
+   * The model's pieces for one window of samples: [{timestamp: [s, e], text}], seconds from the window's start.
+   * @param {string} [lang] 'sr' (default) or 'en'
+   */
+  run(pcm, lang = 'sr') {
     const id = this.nextId++;
     const copy = pcm.slice(); // the window's own buffer, handed over to the worker
     return new Promise((resolve, reject) => {
       this.waiting.set(id, { resolve, reject });
-      this.worker.postMessage({ type: 'run', id, pcm: copy }, [copy.buffer]);
+      this.worker.postMessage({ type: 'run', id, pcm: copy, lang }, [copy.buffer]);
     });
   }
 

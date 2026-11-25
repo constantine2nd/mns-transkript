@@ -42,7 +42,7 @@ const S = {
 
 const prefs = loadPrefs();
 function loadPrefs() {
-  const d = { latin: true, autoscroll: true, speed: 1, theme: 'system' };
+  const d = { latin: true, autoscroll: true, speed: 1, theme: 'system', asrLang: 'sr' };
   try { return { ...d, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return d; }
 }
 function savePrefs() {
@@ -242,6 +242,8 @@ async function setupAsr() {
   ASR.why = s.ok ? '' : t(s.reason);
   $('#asr-card').hidden = false;
   $('#asr-pick').hidden = !s.ok;
+  $('#asr-lang-field').hidden = !s.ok;
+  $('#asr-lang').value = ['sr', 'en'].includes(prefs.asrLang) ? prefs.asrLang : 'sr';
   $('#asr-why').hidden = s.ok;
   $('#asr-why').textContent = ASR.why;
   await updateModelLine();
@@ -276,15 +278,17 @@ async function transcribeFile(file) {
   const id = newTranscriptId(now);
   const title = file.name.replace(/\.[^.]+$/, '') || id;
   const createdAt = file.lastModified || now.getTime(); // a recording's file date is when it was recorded
+  const lang = $('#asr-lang').value || 'sr';
   const transcript = {
-    id, title, createdAt, durationMs: 0, language: 'sr', segments: [], editedSegments: null, history: [],
+    id, title, createdAt, durationMs: 0, language: lang, segments: [], editedSegments: null, history: [],
     origin: 'web', engine: ENGINE, sourceFile: file.name,
   };
   const fp = await fingerprint([]);
   const doc = {
     id, title, createdAt, durationMs: 0, transcript, loadedFp: fp, baseFp: fp, baseSegs: null, currentFp: fp,
     hasAudio: true, savedAt: Date.now(),
-    asr: { done: 0, pieces: [] }, // samples transcribed so far and the model's pieces: what a resume continues from
+    // samples transcribed so far, the model's pieces and the language: what a resume continues from
+    asr: { done: 0, pieces: [], lang },
   };
   const blob = file.type ? file : new Blob([file], { type: 'audio/mp4' });
   await store.putDocWithAudio(doc, blob);
@@ -368,7 +372,7 @@ async function runAsr(id) {
     for (const w of ws) {
       if (ASR.stop) break;
       if (!isSilent(pcm, w[0], w[1])) {
-        const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1])), pcm, w);
+        const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1]), st.lang || 'sr'), pcm, w);
         st.pieces.push(...placed);
         if (placed.length) {
           $('#asr-last').textContent = display(placed.at(-1).text);
@@ -1297,6 +1301,7 @@ function wire() {
   $('#asr-stop').addEventListener('click', stopAsr);
   $('#asr-file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) transcribeFile(f); e.target.value = ''; });
   $('#asr-delete-model').addEventListener('click', deleteModel);
+  $('#asr-lang').addEventListener('change', (e) => { prefs.asrLang = e.target.value; savePrefs(); });
 
   const drop = $('#drop');
   const file = $('#file');
