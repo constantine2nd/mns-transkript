@@ -19,16 +19,31 @@ env.backends.onnx.wasm.wasmPaths = new URL('vendor/ort/', self.location.href).hr
 
 let asr = null;
 
+// 25 Nov 2026, first run on the live site: the 566 MB download broke off at 57 MB ("network error") and went
+// through on the next try. Files already complete stay stored, so a retry fetches only what is missing.
+const LOAD_TRIES = 3;
+const isNetwork = (e) => /network|fetch|load failed|ERR_/i.test(e?.message || String(e));
+
 async function load() {
   if (asr) { self.postMessage({ type: 'ready' }); return; }
-  asr = await pipeline('automatic-speech-recognition', MODEL, {
-    device: 'webgpu',
-    dtype: DTYPE,
-    revision: REVISION,
-    progress_callback: (p) => {
-      if (p.status === 'progress') self.postMessage({ type: 'progress', file: p.file, loaded: p.loaded, total: p.total });
-    },
-  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      asr = await pipeline('automatic-speech-recognition', MODEL, {
+        device: 'webgpu',
+        dtype: DTYPE,
+        revision: REVISION,
+        progress_callback: (p) => {
+          if (p.status === 'progress') self.postMessage({ type: 'progress', file: p.file, loaded: p.loaded, total: p.total });
+        },
+      });
+      break;
+    } catch (e) {
+      if (!isNetwork(e)) throw e;
+      if (attempt >= LOAD_TRIES) throw new Error(`network: ${e.message || e}`);
+      self.postMessage({ type: 'retry', attempt });
+      await new Promise((r) => setTimeout(r, 3000 * attempt));
+    }
+  }
   self.postMessage({ type: 'ready' });
 }
 

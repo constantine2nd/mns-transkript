@@ -57,7 +57,7 @@ export class Transcriber {
   }
 
   #message(m) {
-    if (m.type === 'progress') { this.onProgress?.(m); return; }
+    if (m.type === 'progress' || m.type === 'retry') { this.onProgress?.(m); return; }
     const key = m.type === 'ready' || (m.type === 'error' && m.id == null) ? 'load' : m.id;
     const w = this.waiting.get(key);
     if (!w) return;
@@ -71,7 +71,7 @@ export class Transcriber {
     this.waiting.clear();
   }
 
-  /** Loads (downloading the first time) the model. onProgress gets {file, loaded, total} per file. */
+  /** Loads (downloading the first time) the model. onProgress gets {type: 'progress', file, loaded, total} per file, and {type: 'retry', attempt} when a broken download starts again. */
   load(onProgress) {
     this.onProgress = onProgress;
     return new Promise((resolve, reject) => {

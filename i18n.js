@@ -179,6 +179,8 @@ export const STRINGS = {
     asrUnfinished: 'nedovršeno {0}%',
     asrResume: 'Nastavi transkripciju',
     asrFailed: 'Transkripcija nije uspela: {0}',
+    asrRetry: 'Veza je prekinuta; pokušavam ponovo ({0}. put)…',
+    asrNetwork: 'Preuzimanje modela je prekinuto (veza sa internetom). Pokušaj ponovo: već preuzeti delovi su sačuvani. Snimak ostaje u listi, sa „Nastavi transkripciju“.',
     asrBadAudio: 'Pregledač ne može da pročita ovaj snimak ({0}). Probaj m4a, mp3 ili wav.',
     asrNotAudio: 'Ovo nije zvučni fajl.',
     asrEmpty: 'U snimku nije prepoznat govor.',

@@ -325,6 +325,7 @@ async function runAsr(id) {
     const files = new Map();
     ASR.loading = true;
     await ASR.transcriber.load((p) => {
+      if (p.type === 'retry') { $('#asr-detail').textContent = t('asrRetry', p.attempt + 1); return; }
       if (!downloading || !p.total) return;
       files.set(p.file, p);
       let loaded = 0;
@@ -392,7 +393,8 @@ async function runAsr(id) {
     // a stop while the model loads ends the worker, which fails the load
     if (!ASR.stop) {
       outcome = 'failed';
-      showMsg(msg, t('asrFailed', e.message || String(e)), true);
+      const text = /^network/.test(e.message || '') ? t('asrNetwork') : t('asrFailed', e.message || String(e));
+      showMsg(msg, text, true);
       ASR.transcriber?.terminate();
       ASR.transcriber = null;
     }
