@@ -1,0 +1,980 @@
+// Moj Novi Sad — Transkript: the editor UI. Logic without the DOM lives in the other modules (and their tests).
+
+import { t } from './i18n.js';
+import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle } from './bundle.js';
+import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers } from './text.js';
+import * as ai from './ai.js';
+import * as store from './store.js';
+import * as hist from './history.js';
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+
+const MAX_AI_ANSWER_BYTES = 4 * 1024 * 1024;
+const SAVE_DELAY_MS = 600;
+/** A version is saved by itself after this long without typing (and on Nazad, leaving or refreshing the page). */
+const VERSION_IDLE_MS = 60_000;
+const PREFS_KEY = 'mns-transkript-prefs';
+
+// ------------------------------------------------------------------ state
+
+/** The open transcript. */
+const S = {
+  doc: null,          // store record (see store.js)
+  segs: [],           // working copy of the effective segments
+  hasEdited: false,   // editedSegments is non-null
+  audioUrl: null,
+  current: -1,        // index of the line playing
+  focused: -1,        // index of the last focused line
+  saveTimer: 0,
+  pendingEdit: false, // typed/split/joined since the last 'edit' version was recorded
+  review: null,       // {sent, changes, missing, continueFrom, checked:Set}
+};
+
+const prefs = loadPrefs();
+function loadPrefs() {
+  const d = { latin: true, autoscroll: true, speed: 1 };
+  try { return { ...d, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return d; }
+}
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode */ }
+}
+
+// Both directions: a transcript mixes scripts (Whisper writes Cyrillic, Parakeet drafts and edits are Latin).
+const display = (text) => (prefs.latin ? toLatin(text) : toCyrillic(text));
+const displayedSegs = () => S.segs.map((s) => ({ ...s, text: display(s.text) }));
+
+// ------------------------------------------------------------------ i18n in markup
+
+function applyI18n() {
+  document.title = t('appName');
+  $('#app-version').textContent = t('version', self.APP_VERSION ?? '?');
+  for (const e of document.querySelectorAll('[data-i18n]')) e.textContent = t(e.dataset.i18n);
+  for (const e of document.querySelectorAll('[data-i18n-title]')) e.title = t(e.dataset.i18nTitle);
+  for (const e of document.querySelectorAll('[data-i18n-aria]')) e.setAttribute('aria-label', t(e.dataset.i18nAria));
+  for (const e of document.querySelectorAll('[data-i18n-placeholder]')) e.placeholder = t(e.dataset.i18nPlaceholder);
+}
+
+function showMsg(node, text, warn = false) {
+  node.textContent = text;
+  node.hidden = !text;
+  node.classList.toggle('warn', warn);
+}
+
+let edMsgTimer = 0;
+function flash(text, warn = false) {
+  const n = $('#ed-msg');
+  showMsg(n, text, warn);
+  clearTimeout(edMsgTimer);
+  if (!warn) edMsgTimer = setTimeout(() => showMsg(n, ''), 6000);
+}
+
+// ------------------------------------------------------------------ dialogs
+
+function closeOnBackdrop(d) {
+  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+  for (const b of d.querySelectorAll('[data-close]')) b.addEventListener('click', () => d.close());
+}
+
+/** Shows a choice dialog; resolves with the chosen value, or null when dismissed. */
+function choose(title, text, buttons) {
+  const d = $('#dlg-confirm');
+  $('#confirm-title').textContent = title;
+  $('#confirm-text').textContent = text;
+  const actions = $('#confirm-actions');
+  actions.replaceChildren();
+  return new Promise((resolve) => {
+    let value = null;
+    for (const b of buttons) {
+      const btn = el('button', `btn ${b.cls || ''}`, b.label);
+      btn.type = 'button';
+      btn.addEventListener('click', () => { value = b.value; d.close(); });
+      actions.append(btn);
+    }
+    d.addEventListener('close', () => resolve(value), { once: true });
+    d.showModal();
+  });
+}
+
+const confirmBox = (title, text, okLabel) => choose(title, text, [
+  { label: t('cancel'), value: false, cls: 'ghost' },
+  { label: okLabel || t('ok'), value: true, cls: 'primary' },
+]).then((v) => v === true);
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = el('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+const downloadText = (text, name, type = 'text/plain') => downloadBlob(new Blob([text], { type: `${type};charset=utf-8` }), name);
+
+// ------------------------------------------------------------------ start screen
+
+async function showStart() {
+  await flushSave();
+  await autoVersion();
+  stopAudio();
+  S.doc = null;
+  $('#editor').hidden = true;
+  $('#start').hidden = false;
+  await renderSaved();
+}
+
+async function renderSaved() {
+  let docs = [];
+  try { docs = await store.listDocs(); } catch (e) { showMsg($('#start-msg'), t('errStorage', e.message), true); }
+  docs.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  const list = $('#saved-list');
+  list.replaceChildren();
+  $('#saved-empty').hidden = docs.length > 0;
+  for (const d of docs) {
+    const li = el('li', 'saved-item');
+    const info = el('div', 'saved-info');
+    info.append(el('strong', '', d.title || d.id));
+    const meta = el('span', 'muted');
+    const parts = [];
+    if (d.createdAt) parts.push(new Date(d.createdAt).toLocaleString('sr-Latn'));
+    if (d.durationMs) parts.push(clock(d.durationMs));
+    if (!d.hasAudio) parts.push(t('noAudio'));
+    meta.textContent = parts.join(' · ');
+    info.append(meta);
+    if (d.currentFp && d.currentFp !== d.loadedFp) info.append(el('span', 'badge', t('edited')));
+    const open = el('button', 'btn primary small', t('open'));
+    open.type = 'button';
+    open.addEventListener('click', () => openDoc(d.id));
+    const del = el('button', 'btn ghost small', t('delete'));
+    del.type = 'button';
+    del.addEventListener('click', async () => {
+      if (await confirmBox(t('delete'), t('deleteConfirm', d.title || d.id), t('delete'))) {
+        await store.deleteDoc(d.id);
+        renderSaved();
+      }
+    });
+    li.append(info, open, del);
+    list.append(li);
+  }
+}
+
+async function importFile(file) {
+  const msg = $('#start-msg');
+  showMsg(msg, t('loading'));
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const { envelope, transcript, audio } = await parseBundle(bytes);
+    if (!transcript.id) transcript.id = envelope.transcriptId;
+    const id = String(transcript.id);
+    const { loadedFp, baseFp, baseSegs } = await loadFingerprints(envelope, transcript);
+    const local = await store.getDoc(id);
+    const decision = importDecision(local, local?.currentFp ?? local?.loadedFp, loadedFp);
+    if (decision === 'ask') {
+      const pick = await choose(t('conflictTitle'), t('conflictText', local.title || id), [
+        { label: t('cancel'), value: null, cls: 'ghost' },
+        { label: t('takePhone'), value: 'phone' },
+        { label: t('keepMine'), value: 'mine', cls: 'primary' },
+      ]);
+      if (pick === null) { showMsg(msg, ''); return; }
+      if (pick === 'mine') { showMsg(msg, ''); await openDoc(id); return; }
+    }
+    // Taking the incoming text over a local copy: keep the versions made here too (history rule 3).
+    if (local) transcript.history = hist.merge(local.transcript?.history, transcript.history);
+    // The text taken is the phone's: when the history does not end with it (a merged laptop version, or phone edits
+    // made before versions existed), record it as a "Sa telefona" version, so it is not later saved as a laptop edit.
+    transcript.history = hist.record(transcript, { source: 'phone', device: 'web', segments: transcript.editedSegments ?? null, now: Date.now() });
+    const doc = {
+      id,
+      title: String(transcript.title || envelope.title || id),
+      createdAt: Number(transcript.createdAt) || envelope.exportedAt || Date.now(),
+      durationMs: Number(transcript.durationMs) || 0,
+      transcript,
+      loadedFp,
+      baseFp,
+      baseSegs,
+      currentFp: loadedFp,
+      hasAudio: !!audio || !!local?.hasAudio,
+      savedAt: Date.now(),
+    };
+    const blob = audio ? new Blob([audio], { type: 'audio/mp4' }) : null;
+    await store.putDocWithAudio(doc, blob);
+    store.persist();
+    showMsg(msg, '');
+    await openDoc(id);
+  } catch (e) {
+    console.error(e);
+    const text = e instanceof BadBundle ? t(e.code, e.detail) : t('errRead', e.message || String(e));
+    showMsg(msg, text, true);
+  }
+}
+
+// ------------------------------------------------------------------ editor
+
+async function openDoc(id) {
+  const doc = await store.getDoc(id);
+  if (!doc) return;
+  S.doc = doc;
+  S.hasEdited = doc.transcript.editedSegments != null;
+  S.pendingEdit = false;
+  S.segs = effective(doc.transcript).map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  S.current = -1;
+  S.focused = -1;
+  $('#start').hidden = true;
+  $('#editor').hidden = false;
+  $('#title').textContent = doc.title;
+  // Typing left unsaved when the page was closed or reloaded becomes a version now, if leaving could not record it.
+  if (unsavedChanges()) { commitEdit(); await saveNow(); }
+  updateVersionChip();
+  $('#meta').textContent = metaLine(doc.transcript);
+  setSaveState('');
+  showMsg($('#ed-msg'), '');
+  stopAudio();
+  const blob = doc.hasAudio ? await store.getAudio(id) : null;
+  const audio = $('#audio');
+  if (blob) {
+    S.audioUrl = URL.createObjectURL(blob);
+    audio.src = S.audioUrl;
+    audio.playbackRate = prefs.speed;
+    // A broken file (e.g. an m4a whose encoding was cut short, 25 Nov 2026) fails here, before anyone presses play.
+    audio.onerror = () => { if (audio.src === S.audioUrl) flash(t('audioBroken'), true); };
+  } else {
+    audio.removeAttribute('src');
+  }
+  $('#player').classList.toggle('disabled', !blob);
+  $('#no-audio').hidden = !!blob;
+  updateScriptButtons();
+  renderLines();
+  updateTime();
+  window.scrollTo(0, 0);
+}
+
+/** "Petar (+381…) · date · dolazni · 04:24" for a call, or null. */
+function callLine(tr) {
+  const c = tr.call;
+  if (!c || typeof c !== 'object') return null;
+  const parts = [];
+  const who = [c.name, c.number].filter(Boolean);
+  if (who.length) parts.push(who.length === 2 ? `${who[0]} (${who[1]})` : who[0]);
+  if (c.date) parts.push(new Date(c.date).toLocaleString('sr-Latn'));
+  const dir = { 1: 'callIncoming', 2: 'callOutgoing', 3: 'callMissed', 4: 'callVoicemail', 5: 'callRejected' }[c.type] || 'callUnknown';
+  parts.push(t(dir));
+  if (c.durationSec) parts.push(clock(c.durationSec * 1000));
+  return parts.join(' · ');
+}
+
+function metaLine(tr) {
+  const call = callLine(tr);
+  const parts = [];
+  if (call) parts.push(call);
+  else {
+    if (tr.createdAt) parts.push(new Date(tr.createdAt).toLocaleString('sr-Latn'));
+    if (tr.durationMs) parts.push(t('duration', clock(tr.durationMs)));
+  }
+  parts.push(t('lines', S.segs.length || effective(tr).length));
+  return parts.join(' · ');
+}
+
+function stopAudio() {
+  const audio = $('#audio');
+  audio.pause();
+  if (S.audioUrl) { URL.revokeObjectURL(S.audioUrl); S.audioUrl = null; }
+  audio.removeAttribute('src');
+  audio.load();
+  updatePlayButton();
+}
+
+// ---------------- lines
+
+function tagsOf() {
+  const tags = S.doc?.transcript?.tags;
+  return Array.isArray(tags) ? tags.filter((g) => g && typeof g.start === 'number' && typeof g.end === 'number') : [];
+}
+
+function renderLines(focusIndex = -1, caret = -1) {
+  const ol = $('#lines');
+  ol.replaceChildren();
+  const tags = tagsOf();
+  for (let i = 0; i < S.segs.length; i++) ol.append(lineRow(i, tags));
+  markChanged();
+  highlight(S.current, false);
+  if (S.doc) $('#meta').textContent = metaLine(S.doc.transcript);
+  if (focusIndex >= 0) focusLine(focusIndex, caret);
+}
+
+function lineRow(i, tags) {
+  const s = S.segs[i];
+  const li = el('li', 'line');
+  li.dataset.i = i;
+  const time = el('button', 'ltime', clock(s.start));
+  time.type = 'button';
+  time.title = t('playLine');
+  time.addEventListener('click', () => playFrom(i));
+  const marks = el('span', 'tags');
+  for (const g of tags.filter((g) => tagCovers(g, s))) {
+    const m = el('span', g.kind === 'IMPORTANT' ? 'tag important' : 'tag', g.kind === 'IMPORTANT' ? '★' : '•');
+    m.title = (g.label && String(g.label).trim()) || (g.kind === 'IMPORTANT' ? t('tagImportant') : t('tagOther'));
+    if (g.note) m.title += ` — ${g.note}`;
+    marks.append(m);
+  }
+  const ta = el('textarea', 'ltext');
+  ta.rows = 1;
+  ta.spellcheck = true;
+  ta.lang = 'sr';
+  ta.value = display(s.text);
+  ta.addEventListener('input', () => onInput(i, ta));
+  ta.addEventListener('focus', () => { S.focused = i; });
+  ta.addEventListener('keydown', (e) => onLineKey(e, i, ta));
+  const join = el('button', 'ljoin', '⤓');
+  join.type = 'button';
+  join.title = t('joinNext');
+  join.setAttribute('aria-label', t('joinNext'));
+  join.hidden = i === S.segs.length - 1;
+  join.addEventListener('click', () => joinAt(i));
+  li.append(time, marks, ta, join);
+  requestAnimationFrame(() => autoGrow(ta));
+  return li;
+}
+
+function autoGrow(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = `${ta.scrollHeight}px`;
+}
+
+const rowOf = (i) => $('#lines').children[i];
+const areaOf = (i) => rowOf(i)?.querySelector('textarea');
+
+function markChanged() {
+  const orig = S.doc?.transcript?.segments || [];
+  const same = orig.length === S.segs.length;
+  for (let i = 0; i < S.segs.length; i++) {
+    const row = rowOf(i);
+    if (!row) continue;
+    const changed = same && (orig[i].text !== S.segs[i].text || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end);
+    row.classList.toggle('changed', changed);
+    row.title = changed ? t('lineChanged') : '';
+  }
+}
+
+function focusLine(i, caret = -1) {
+  const ta = areaOf(i);
+  if (!ta) return;
+  ta.focus({ preventScroll: true });
+  const p = caret < 0 ? ta.value.length : Math.min(caret, ta.value.length);
+  ta.setSelectionRange(p, p);
+  rowOf(i).scrollIntoView({ block: 'nearest' });
+}
+
+function edited() {
+  S.hasEdited = true;
+  S.pendingEdit = true;
+  updateVersionChip();
+  scheduleSave();
+}
+
+function onInput(i, ta) {
+  S.segs[i].text = ta.value;   // stored as typed, also in Latin mode (as on the phone)
+  autoGrow(ta);
+  const orig = S.doc.transcript.segments;
+  const row = rowOf(i);
+  if (orig.length === S.segs.length) {
+    const changed = orig[i].text !== ta.value || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end;
+    row.classList.toggle('changed', changed);
+  }
+  edited();
+}
+
+function splitAt(i, ta) {
+  const s = S.segs[i];
+  // The cursor is in the displayed text; split the stored text at the same letter so Cyrillic stays Cyrillic.
+  let pos;
+  if (ta.value === s.text) pos = ta.selectionStart;
+  else if (prefs.latin) pos = displayPosToStored(s.text, ta.selectionStart);
+  else { s.text = ta.value; pos = ta.selectionStart; } // Cyrillic view of Latin text: keep the line as shown, like a typed edit
+  const [a, b] = splitSegment(s, pos);
+  S.segs.splice(i, 1, a, b);
+  edited();
+  renderLines(i + 1, 0);
+}
+
+function joinAt(i) {
+  if (i < 0 || i + 1 >= S.segs.length) return;
+  const caret = display(S.segs[i].text.replace(/\s+$/u, '')).length + (S.segs[i].text.trim() && S.segs[i + 1].text.trim() ? 1 : 0);
+  S.segs.splice(i, 2, joinSegments(S.segs[i], S.segs[i + 1]));
+  edited();
+  if (S.current > i) S.current--;
+  renderLines(i, caret);
+}
+
+function onLineKey(e, i, ta) {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key === 'Enter') { e.preventDefault(); splitAt(i, ta); return; }
+  if (mod && e.key === 'Backspace' && ta.selectionStart === 0 && ta.selectionEnd === 0 && i > 0) {
+    e.preventDefault();
+    joinAt(i - 1);
+  }
+}
+
+// ---------------- playback
+
+const audioEl = () => $('#audio');
+const hasAudio = () => !!S.audioUrl;
+
+/** play() rejects for an unplayable file or a blocked autoplay; say so instead of doing nothing. */
+function play(a) {
+  a.play().catch((e) => { if (e?.name !== 'AbortError') flash(a.error ? t('audioBroken') : t('playFailed', e?.message || e), true); });
+}
+
+function playFrom(i) {
+  const s = S.segs[i];
+  if (!s) return;
+  S.focused = i;
+  if (!hasAudio()) { focusLine(i, 0); return; }
+  const a = audioEl();
+  a.currentTime = s.start / 1000;
+  play(a);
+}
+
+function togglePlay() {
+  if (!hasAudio()) return;
+  const a = audioEl();
+  if (a.paused) play(a); else a.pause();
+}
+
+/** Index of the line at [ms]: the last one starting at or before it (binary search; lines are in time order). */
+function lineAt(ms) {
+  let lo = 0;
+  let hi = S.segs.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (S.segs[mid].start <= ms) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  if (found >= 0 && ms >= S.segs[found].end && (found + 1 >= S.segs.length || S.segs[found + 1].start > ms)) {
+    // in a gap after the line: keep it highlighted only while inside it
+    return ms < S.segs[found].end + 1500 ? found : -1;
+  }
+  return found;
+}
+
+function highlight(i, scroll = true) {
+  const ol = $('#lines');
+  ol.querySelector('.line.playing')?.classList.remove('playing');
+  S.current = i;
+  const row = i >= 0 ? rowOf(i) : null;
+  if (!row) return;
+  row.classList.add('playing');
+  const typing = document.activeElement?.classList?.contains('ltext');
+  if (scroll && prefs.autoscroll && !typing) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function updateTime() {
+  const a = audioEl();
+  const cur = hasAudio() ? a.currentTime : 0;
+  const dur = hasAudio() && Number.isFinite(a.duration) ? a.duration : (S.doc?.durationMs || 0) / 1000;
+  $('#time').textContent = `${clock(cur * 1000)} / ${clock(dur * 1000)}`;
+  if (!seeking) $('#seek').value = dur > 0 ? String(Math.round((cur / dur) * 1000)) : '0';
+  const i = hasAudio() ? lineAt(cur * 1000) : -1;
+  if (i !== S.current) highlight(i);
+}
+
+function updatePlayButton() {
+  const playing = hasAudio() && !audioEl().paused;
+  const b = $('#play');
+  b.textContent = playing ? '❚❚' : '▶';
+  b.title = playing ? t('pause') : t('play');
+  b.setAttribute('aria-label', b.title);
+}
+
+let seeking = false;
+let raf = 0;
+function tick() {
+  updateTime();
+  raf = audioEl().paused ? 0 : requestAnimationFrame(tick);
+}
+
+// ---------------- saving
+
+function setSaveState(text) { $('#save-state').textContent = text; }
+
+function scheduleSave() {
+  setSaveState(t('saving'));
+  clearTimeout(S.saveTimer);
+  S.saveTimer = setTimeout(saveNow, SAVE_DELAY_MS);
+  clearTimeout(S.versionTimer);
+  S.versionTimer = setTimeout(autoVersion, VERSION_IDLE_MS);
+}
+
+/** Saves unsaved typing as a version, quietly: idle minute, Nazad, leaving or reloading the page. */
+async function autoVersion() {
+  clearTimeout(S.versionTimer);
+  S.versionTimer = 0;
+  if (!S.doc || !unsavedChanges()) return;
+  commitEdit();
+  await saveNow();
+}
+
+async function saveNow() {
+  clearTimeout(S.saveTimer);
+  S.saveTimer = 0;
+  if (!S.doc) return;
+  const doc = S.doc;
+  doc.transcript.editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
+  doc.currentFp = await fingerprint(effective(doc.transcript));
+  doc.savedAt = Date.now();
+  try {
+    await store.putDoc(doc);
+    if (S.doc === doc && !S.saveTimer) setSaveState(t('saved'));
+  } catch (e) {
+    setSaveState('');
+    flash(t('errStorage', e.message), true);
+  }
+}
+
+async function flushSave() {
+  if (S.saveTimer) await saveNow();
+}
+
+// ---------------- version history
+
+const segsCopy = () => S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+
+/** Records a version of the text as it is now (null = the machine text). */
+function recordVersion(source, segments, from) {
+  const tr = S.doc.transcript;
+  tr.history = hist.record(tr, { source, device: 'web', segments, now: Date.now(), from });
+  updateVersionChip();
+}
+
+/**
+ * Typing is autosaved but makes no version: a version is saved by hand ("Sačuvaj verziju", Ctrl+S). Before an AI
+ * apply, a revert, a restore or sending to the phone, unsaved typing is saved as an 'edit' version first, so it
+ * never drops out of the history.
+ */
+function commitEdit() {
+  if (!S.doc) return;
+  S.pendingEdit = false;
+  recordVersion('edit', S.hasEdited ? segsCopy() : null);
+}
+
+/** "Sačuvaj verziju": the text as it is now becomes the next version (nothing when it equals the last one). */
+async function saveVersion() {
+  if (!S.doc) return;
+  const before = hist.currentVersion(S.doc.transcript.history);
+  commitEdit();
+  await saveNow();
+  const n = hist.currentVersion(S.doc.transcript.history);
+  flash(n > before ? t('versionSaved', n) : t('versionNoChange', n));
+}
+
+/** True when the text differs from the last saved version: the chip then reads "v4*". */
+function unsavedChanges() {
+  const tr = S.doc?.transcript;
+  if (!tr) return false;
+  const all = hist.versions(tr);
+  return !hist.sameText(S.hasEdited ? S.segs : tr.segments, hist.textOf(tr, all[all.length - 1]));
+}
+
+function updateVersionChip() {
+  const n = hist.currentVersion(S.doc?.transcript?.history);
+  const dirty = unsavedChanges();
+  const chip = $('#version-chip');
+  chip.textContent = `v${n}${dirty ? '*' : ''}`;
+  chip.title = dirty ? t('unsavedVersion') : t('historyTitle');
+  $('#save-version').classList.toggle('primary', dirty);
+}
+
+const pad2 = (x) => String(x).padStart(2, '0');
+const shortDate = (ms) => { const d = new Date(ms); return `${d.getDate()}.${d.getMonth() + 1}. ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+function sourceLabel(v) {
+  if (v.source === 'restore') return t('histRestore', v.from ?? '?');
+  const key = { original: 'histOriginal', edit: 'histEdit', ai: 'histAi', laptop: 'histLaptop', reset: 'histReset', phone: 'histPhone' }[v.source];
+  return key ? t(key) : String(v.source ?? '');
+}
+
+/** "12 redova izmenjeno", with Serbian plural forms. */
+function changedLabel(n) {
+  const one = n % 10 === 1 && n % 100 !== 11;
+  const few = n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14);
+  return t(one ? 'histChanged1' : few ? 'histChanged2' : 'histChanged5', n);
+}
+
+function openHistory() {
+  const tr = S.doc.transcript;
+  const all = hist.versions(tr);
+  const list = $('#history-list');
+  list.replaceChildren();
+  for (let i = all.length - 1; i >= 0; i--) {
+    const v = all[i];
+    const text = hist.textOf(tr, v);
+    const parts = [`v${v.n}`];
+    if (v.at) parts.push(shortDate(v.at));
+    parts.push(sourceLabel(v));
+    if (v.device === 'phone' || v.device === 'web') parts.push(t(v.device === 'phone' ? 'devPhone' : 'devWeb'));
+    if (i > 0) {
+      const n = hist.linesChanged(hist.textOf(tr, all[i - 1]), text);
+      parts.push(n == null ? t('histResplit') : changedLabel(n));
+    }
+    const li = el('li', i === all.length - 1 ? 'hist-item current' : 'hist-item');
+    const head = el('div', 'hist-head');
+    head.append(el('span', 'hist-label', parts.join(' · ')));
+    if (i === all.length - 1) head.append(el('span', 'badge', t('histCurrent')));
+    else {
+      const btn = el('button', 'btn small', t('histRestoreBtn'));
+      btn.type = 'button';
+      btn.addEventListener('click', () => restoreVersion(v.n));
+      head.append(btn);
+    }
+    const det = el('details', 'hist-preview');
+    det.append(el('summary', '', t('histShow')));
+    det.addEventListener('toggle', () => {
+      if (!det.open || det.querySelector('ol')) return;
+      // What this version changed against the one before: removed words struck through, new ones bold.
+      const pairs = hist.previewPairs(i > 0 ? hist.textOf(tr, all[i - 1]) : null, text);
+      const ol = el('ol', 'hist-lines');
+      let changed = 0;
+      for (const { seg, old } of pairs) {
+        const now = display(seg.text);
+        const was = old == null ? null : display(old);
+        const isChanged = was != null && was.trim().replace(/\s+/g, ' ') !== now.trim().replace(/\s+/g, ' ');
+        if (isChanged) changed++;
+        const row = el('li', isChanged ? 'changed' : 'same');
+        row.append(el('span', 'hist-time', clock(seg.start)));
+        if (isChanged) {
+          const body = el('span', 'diff');
+          for (const w of ai.diff(was, now)) {
+            body.append(el(w.kind === 'removed' ? 'del' : w.kind === 'added' ? 'ins' : 'span', '', w.text), document.createTextNode(' '));
+          }
+          row.append(body);
+        } else row.append(document.createTextNode(now));
+        ol.append(row);
+      }
+      // Only what changed against the previous version; v1 (nothing before it) shows its whole text.
+      if (i > 0) {
+        ol.classList.add('only-changed');
+        if (changed === 0) { det.append(el('p', 'muted hist-none', t('histNoTextChange'))); return; }
+      }
+      det.append(ol);
+    });
+    li.append(head, det);
+    list.append(li);
+  }
+  $('#dlg-history').showModal();
+}
+
+async function restoreVersion(n) {
+  if (!(await confirmBox(t('histRestoreTitle', n), t('histRestoreText', n), t('histRestoreBtn')))) return;
+  $('#dlg-history').close();
+  commitEdit();
+  const target = hist.restoreTarget(S.doc.transcript, n);
+  if (target === undefined) return;
+  S.hasEdited = target !== null;
+  S.segs = (target ?? S.doc.transcript.segments).map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  recordVersion('restore', target, n);
+  renderLines();
+  await saveNow();
+  flash(t('histRestored', n));
+}
+
+// ---------------- toolbar actions
+
+function savePhoneBundle() {
+  commitEdit();  // the bundle's transcript.json carries the history, with this session's typing in it
+  const tr = S.doc.transcript;
+  const editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
+  const { bytes, fileName } = buildBundle({ transcript: tr, editedSegments, baseFingerprint: S.doc.baseFp, baseSegments: S.doc.baseSegs ?? null });
+  downloadBlob(new Blob([bytes], { type: 'application/zip' }), fileName);
+  flash(t('savedBundle', fileName));
+  saveNow();
+}
+
+function exportAs(kind) {
+  const segs = displayedSegs();
+  const base = baseName(S.doc.title);
+  if (kind === 'txt') downloadText(toTxt(segs, { header: [S.doc.title, callLine(S.doc.transcript)].filter(Boolean).join(' · '), tags: tagsOf() }), `${base}.txt`);
+  else if (kind === 'srt') downloadText(toSrt(segs), `${base}.srt`, 'application/x-subrip');
+  else downloadText(toVtt(segs), `${base}.vtt`, 'text/vtt');
+}
+
+async function revert() {
+  if (!(await confirmBox(t('revertTitle'), t('revertText'), t('revert')))) return;
+  commitEdit();
+  S.hasEdited = false;
+  S.segs = S.doc.transcript.segments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  recordVersion('reset', null);
+  renderLines();
+  await saveNow();
+  flash(t('revertDone'));
+}
+
+// ---------------- AI round trip
+
+function aiRequest() {
+  const shown = displayedSegs();
+  if (shown.length === 0) { flash(t('aiNothing'), true); return; }
+  const base = baseName(S.doc.title);
+  const text = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), base);
+  $('#ai-request-text').value = text;
+  $('#ai-request-note').textContent = t('aiRequestText', ai.answerFileName(base));
+  showMsg($('#ai-request-msg'), '');
+  $('#dlg-ai-request').showModal();
+}
+
+async function aiCopy() {
+  const ta = $('#ai-request-text');
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    showMsg($('#ai-request-msg'), t('copied'));
+  } catch {
+    ta.focus();
+    ta.select();
+    showMsg($('#ai-request-msg'), t('copyFailed'), true);
+  }
+}
+
+function aiOpenImport() {
+  $('#ai-answer').value = '';
+  showMsg($('#ai-import-msg'), '');
+  $('#dlg-ai-import').showModal();
+}
+
+function aiCheck(answer) {
+  const msg = $('#ai-import-msg');
+  if (!answer.trim()) { showMsg(msg, t('aiEmpty'), true); return; }
+  const sent = ai.lines(displayedSegs());
+  const n = sent.length;
+  const a = ai.parseAnswer(answer, sent);
+  if (a.type === 'mismatch') {
+    if (a.unrelated) { showMsg(msg, t('aiUnrelated'), true); return; }
+    const all = [...a.missing, ...a.duplicate, ...a.unknown];
+    const ids = all.slice(0, 5).map((x) => ai.id(x - 1, n)).join(', ') + (all.length > 5 ? '…' : '');
+    showMsg(msg, t('aiMismatch', a.found, n, ids), true);
+    return;
+  }
+  if (a.changes.length === 0) {
+    const note = a.continueFrom != null ? `. ${t('aiPartial', n - a.missing.length, n, ai.id(a.continueFrom - 1, n))}` : '';
+    showMsg(msg, t('aiNoChanges') + note, a.continueFrom != null);
+    return;
+  }
+  $('#dlg-ai-import').close();
+  openReview({ sent, changes: a.changes, missing: a.missing, continueFrom: a.continueFrom });
+}
+
+async function aiFile(file) {
+  const msg = $('#ai-import-msg');
+  if (file.size > MAX_AI_ANSWER_BYTES) { showMsg(msg, t('errRead', t('aiFileTooLarge')), true); return; }
+  const text = await file.text();
+  $('#ai-answer').value = text;
+  aiCheck(text);
+}
+
+function openReview(r) {
+  S.review = { ...r, checked: new Set(r.changes.map((c) => c.index)) };
+  const n = r.sent.length;
+  const unsure = r.changes.filter((c) => c.doubtful).length;
+  const big = r.changes.filter((c) => c.rewritten).length;
+  $('#review-summary').textContent = t('aiSummary', r.changes.length, unsure, big);
+  const covered = n - r.missing.length;
+  $('#review-coverage').textContent = t('aiCoverage', covered, n);
+  const prog = $('#review-progress');
+  prog.max = Math.max(1, n);
+  prog.value = covered;
+  const partial = $('#review-partial');
+  if (r.continueFrom != null) showMsg(partial, t('aiPartial', covered, n, ai.id(r.continueFrom - 1, n)));
+  else showMsg(partial, '');
+  const list = $('#review-list');
+  list.replaceChildren();
+  for (const c of r.changes) {
+    const li = el('li', 'change');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.checked = true;
+    box.addEventListener('change', () => {
+      if (box.checked) S.review.checked.add(c.index); else S.review.checked.delete(c.index);
+      updateApply();
+    });
+    const head = el('div', 'change-head');
+    const seg = S.segs[c.index];
+    const where = el('button', 'ltime', `${ai.id(c.index, n)} · ${clock(seg ? seg.start : 0)}`);
+    where.type = 'button';
+    where.addEventListener('click', () => playFrom(c.index));
+    head.append(box, where);
+    if (c.doubtful) head.append(el('span', 'badge unsure', t('aiUnsure')));
+    if (c.rewritten) head.append(el('span', 'badge big', t('aiBig')));
+    const body = el('p', 'diff');
+    for (const w of ai.diff(c.old, c.new)) {
+      const cls = w.kind === 'removed' ? 'del' : w.kind === 'added' ? 'ins' : 'same';
+      const span = el(w.kind === 'removed' ? 'del' : w.kind === 'added' ? 'ins' : 'span', cls, w.text);
+      if (/\[\?/.test(w.text)) span.classList.add('doubt');
+      body.append(span, document.createTextNode(' '));
+    }
+    const label = el('label', 'change-body');
+    label.append(body);
+    li.append(head, label);
+    label.addEventListener('click', () => { box.checked = !box.checked; box.dispatchEvent(new Event('change')); });
+    list.append(li);
+  }
+  updateApply();
+  $('#dlg-ai-review').showModal();
+}
+
+function updateApply() {
+  const n = S.review ? S.review.checked.size : 0;
+  const b = $('#review-apply');
+  b.textContent = t('aiApply', n);
+  b.disabled = n === 0;
+}
+
+function reviewSelect(all) {
+  if (!S.review) return;
+  S.review.checked = new Set(all ? S.review.changes.map((c) => c.index) : []);
+  for (const box of document.querySelectorAll('#review-list input[type=checkbox]')) box.checked = all;
+  updateApply();
+}
+
+async function reviewApply() {
+  const r = S.review;
+  if (!r) return;
+  $('#dlg-ai-review').close();
+  S.review = null;
+  if (r.checked.size === 0) return;
+  const now = ai.lines(displayedSegs());
+  if (now.length !== r.sent.length || now.some((x, i) => x !== r.sent[i])) { flash(t('aiChanged'), true); return; }
+  commitEdit();  // typing before the AI answer stays its own version
+  let count = 0;
+  for (const c of r.changes) {
+    if (!r.checked.has(c.index)) continue;
+    S.segs[c.index] = { ...S.segs[c.index], text: c.applied };
+    count++;
+  }
+  S.hasEdited = true;
+  recordVersion('ai', segsCopy());
+  renderLines();
+  await saveNow();
+  flash(t('aiApplied', count));
+}
+
+// ---------------- script toggle
+
+function updateScriptButtons() {
+  $('#script-lat').classList.toggle('on', prefs.latin);
+  $('#script-cyr').classList.toggle('on', !prefs.latin);
+  $('#script-lat').setAttribute('aria-pressed', String(prefs.latin));
+  $('#script-cyr').setAttribute('aria-pressed', String(!prefs.latin));
+}
+
+function setLatin(on) {
+  if (prefs.latin === on) return;
+  prefs.latin = on;
+  savePrefs();
+  updateScriptButtons();
+  if (S.doc) renderLines(S.focused);
+}
+
+// ------------------------------------------------------------------ global keys
+
+function moveLine(delta) {
+  const from = S.focused >= 0 ? S.focused : Math.max(0, S.current);
+  const i = Math.max(0, Math.min(S.segs.length - 1, from + delta));
+  focusLine(i);
+  S.focused = i;
+  if (hasAudio()) audioEl().currentTime = S.segs[i].start / 1000;
+  updateTime();
+}
+
+function onGlobalKey(e) {
+  if (!S.doc || $('#editor').hidden) return;
+  if (document.querySelector('dialog[open]')) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveVersion(); return; }
+  if ((mod && (e.code === 'Space' || e.key === ' ')) || (e.key === 'Escape' && !mod)) { e.preventDefault(); togglePlay(); return; }
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveLine(e.key === 'ArrowUp' ? -1 : 1); return; }
+  if (mod && (e.key === 'r' || e.key === 'R') && !e.shiftKey) {
+    e.preventDefault();
+    const i = S.focused >= 0 ? S.focused : S.current;
+    if (i >= 0) playFrom(i);
+  }
+}
+
+// ------------------------------------------------------------------ wiring
+
+function wire() {
+  applyI18n();
+  for (const d of document.querySelectorAll('dialog')) closeOnBackdrop(d);
+
+  const drop = $('#drop');
+  const file = $('#file');
+  file.addEventListener('change', () => { if (file.files[0]) importFile(file.files[0]); file.value = ''; });
+  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); file.click(); } });
+  for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
+  for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) importFile(f); });
+  // A file dropped anywhere else must not navigate away from the editor.
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer?.files?.[0];
+    if (f && !$('#start').hidden) importFile(f);
+  });
+
+  $('#back').addEventListener('click', showStart);
+  $('#save-phone').addEventListener('click', savePhoneBundle);
+  for (const b of document.querySelectorAll('[data-export]')) b.addEventListener('click', () => exportAs(b.dataset.export));
+  $('#revert').addEventListener('click', revert);
+  $('#history').addEventListener('click', openHistory);
+  $('#save-version').addEventListener('click', saveVersion);
+  $('#version-chip').addEventListener('click', openHistory);
+  $('#ai-request').addEventListener('click', aiRequest);
+  $('#ai-copy').addEventListener('click', aiCopy);
+  $('#ai-download').addEventListener('click', () => downloadText($('#ai-request-text').value, `${baseName(S.doc.title)} - AI request.txt`));
+  $('#ai-import').addEventListener('click', aiOpenImport);
+  $('#ai-check').addEventListener('click', () => aiCheck($('#ai-answer').value));
+  $('#ai-file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) aiFile(f); e.target.value = ''; });
+  $('#review-all').addEventListener('click', () => reviewSelect(true));
+  $('#review-none').addEventListener('click', () => reviewSelect(false));
+  $('#review-cancel').addEventListener('click', () => { S.review = null; $('#dlg-ai-review').close(); });
+  $('#review-apply').addEventListener('click', reviewApply);
+  $('#help').addEventListener('click', () => $('#dlg-help').showModal());
+  $('#script-lat').addEventListener('click', () => setLatin(true));
+  $('#script-cyr').addEventListener('click', () => setLatin(false));
+
+  const a = audioEl();
+  $('#play').addEventListener('click', togglePlay);
+  a.addEventListener('play', () => { updatePlayButton(); if (!raf) raf = requestAnimationFrame(tick); });
+  a.addEventListener('pause', () => { updatePlayButton(); updateTime(); });
+  a.addEventListener('ended', updatePlayButton);
+  a.addEventListener('loadedmetadata', updateTime);
+  a.addEventListener('seeked', updateTime);
+  const seek = $('#seek');
+  seek.addEventListener('input', () => {
+    seeking = true;
+    if (hasAudio() && Number.isFinite(a.duration)) a.currentTime = (Number(seek.value) / 1000) * a.duration;
+  });
+  seek.addEventListener('change', () => { seeking = false; updateTime(); });
+  const speed = $('#speed');
+  speed.value = String(prefs.speed);
+  speed.addEventListener('change', () => { prefs.speed = Number(speed.value); a.playbackRate = prefs.speed; savePrefs(); });
+  const auto = $('#autoscroll');
+  auto.checked = prefs.autoscroll;
+  auto.addEventListener('change', () => { prefs.autoscroll = auto.checked; savePrefs(); });
+
+  document.addEventListener('keydown', onGlobalKey);
+  window.addEventListener('resize', () => { for (const ta of document.querySelectorAll('.ltext')) autoGrow(ta); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave().then(autoVersion); });
+  window.addEventListener('pagehide', () => { flushSave().then(autoVersion); });
+
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
+  }
+  renderSaved();
+}
+
+wire();
