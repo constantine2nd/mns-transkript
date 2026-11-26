@@ -170,6 +170,8 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 }
 .badge.unsure { background: transparent; border: 1px solid var(--brand-strong); color: var(--text); }
 .badge.big { background: transparent; border: 1px solid var(--red); color: var(--red); }
+/* The transcript's language: plain, beside the coloured status badges. */
+.badge.lang { background: transparent; border: 1px solid var(--muted); color: var(--text); letter-spacing: 0.04em; }
 
 .msg { margin: 10px 0; padding: 8px 12px; border-radius: var(--radius); background: var(--hl); }
 .msg.warn { background: transparent; border: 1px solid var(--red); color: var(--red); }

@@ -156,6 +156,7 @@ async function renderSaved() {
     if (!d.hasAudio) parts.push(t('noAudio'));
     meta.textContent = parts.join(' · ');
     info.append(meta);
+    info.append(langBadge(d.transcript?.language || d.asr?.lang));
     if (d.currentFp && d.currentFp !== d.loadedFp && !d.asr) info.append(el('span', 'badge', t('edited')));
     if (d.asr) info.append(el('span', 'badge unsure', t('asrUnfinished', asrPercent(d))));
     const open = el('button', 'btn primary small', d.asr ? t('asrResume') : t('open'));
@@ -172,6 +173,23 @@ async function renderSaved() {
     li.append(info, open, del);
     list.append(li);
   }
+}
+
+/** "Srpski" for sr; a transcript without a language is from the phone or from before 1.9, so Serbian. */
+function langName(code) {
+  const c = code || 'sr';
+  return c === 'sr' ? t('langSr') : c === 'en' ? t('langEn') : c;
+}
+
+/** "SR" / "EN" on a saved transcript: its language, fixed when it was transcribed (a new one needs a new transcription). */
+function langBadge(code) {
+  const c = code || 'sr';
+  const b = el('span', 'badge lang');
+  b.title = t('langTag', langName(c));
+  b.append(el('span', '', c.toUpperCase()));
+  b.firstChild.setAttribute('aria-hidden', 'true');
+  b.append(el('span', 'sr-only', b.title));
+  return b;
 }
 
 async function importFile(file) {
@@ -318,7 +336,9 @@ async function runAsr(id) {
   ASR.running = true;
   ASR.stop = false;
   const dlg = $('#dlg-asr');
-  $('#asr-file-name').textContent = doc.title;
+  // The language chosen when it started: a resume keeps it, whatever the selector says now.
+  $('#asr-file-name').textContent = `${doc.title} · ${langName(doc.asr.lang)}`;
+  $('#asr-lang').disabled = true;
   $('#asr-detail').textContent = '';
   $('#asr-last').hidden = true;
   $('#asr-stop').disabled = false;
@@ -409,6 +429,7 @@ async function runAsr(id) {
   } finally {
     ASR.running = false;
     ASR.loading = false;
+    $('#asr-lang').disabled = false;
     dlg.close();
     await updateModelLine();
   }
@@ -495,6 +516,7 @@ function metaLine(tr) {
     if (tr.durationMs) parts.push(t('duration', clock(tr.durationMs)));
   }
   parts.push(t('lines', S.segs.length || effective(tr).length));
+  parts.push(langName(tr.language));
   return parts.join(' · ');
 }
 
