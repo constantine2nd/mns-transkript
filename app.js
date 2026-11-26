@@ -514,15 +514,32 @@ function tagsOf() {
   return Array.isArray(tags) ? tags.filter((g) => g && typeof g.start === 'number' && typeof g.end === 'number') : [];
 }
 
-function renderLines(focusIndex = -1, caret = -1) {
+/**
+ * Rebuilds the line list. [anchor]: the line that keeps its place on screen (by default the one to focus); without
+ * it a join or split showed the list from a different place (26 Nov 2026: the joined line jumped from mid-screen to
+ * behind the player bar, because the rows were measured one text row high and grew only on the next frame).
+ */
+function renderLines(focusIndex = -1, caret = -1, anchor = focusIndex) {
   const ol = $('#lines');
+  const anchorTop = anchor >= 0 ? rowOf(anchor)?.getBoundingClientRect().top : undefined;
   ol.replaceChildren();
   const tags = tagsOf();
   for (let i = 0; i < S.segs.length; i++) ol.append(lineRow(i, tags));
+  growAll();
   markChanged();
   highlight(S.current, false);
   if (S.doc) $('#meta').textContent = metaLine(S.doc.transcript);
+  const row = anchor >= 0 ? rowOf(anchor) : null;
+  if (row && anchorTop !== undefined) window.scrollBy(0, row.getBoundingClientRect().top - anchorTop);
   if (focusIndex >= 0) focusLine(focusIndex, caret);
+}
+
+/** Every line's text box to its text's height: all heights read first, then all set, so the page lays out once. */
+function growAll() {
+  const tas = [...document.querySelectorAll('#lines .ltext')];
+  for (const ta of tas) ta.style.height = 'auto';
+  const heights = tas.map((ta) => ta.scrollHeight);
+  tas.forEach((ta, k) => { if (heights[k]) ta.style.height = `${heights[k]}px`; }); // 0: not on screen, left as is
 }
 
 function lineRow(i, tags) {
@@ -560,7 +577,6 @@ function lineRow(i, tags) {
   join.hidden = i === S.segs.length - 1;
   join.addEventListener('click', () => joinAt(i));
   li.append(time, marks, ta, join);
-  requestAnimationFrame(() => autoGrow(ta));
   return li;
 }
 
@@ -604,7 +620,16 @@ function focusLine(i, caret = -1) {
   ta.focus({ preventScroll: true });
   const p = caret < 0 ? ta.value.length : Math.min(caret, ta.value.length);
   ta.setSelectionRange(p, p);
-  rowOf(i).scrollIntoView({ block: 'nearest' });
+  reveal(rowOf(i));
+}
+
+/** Scrolls just enough to show [row] below the sticky player bar, which scrollIntoView does not know about. */
+function reveal(row) {
+  const margin = 8;
+  const top = ($('.player')?.getBoundingClientRect().bottom ?? 0) + margin;
+  const r = row.getBoundingClientRect();
+  if (r.top < top) window.scrollBy(0, r.top - top);
+  else if (r.bottom > innerHeight - margin) window.scrollBy(0, Math.min(r.bottom - innerHeight + margin, r.top - top));
 }
 
 function edited() {
@@ -637,7 +662,7 @@ function splitAt(i, ta) {
   const [a, b] = splitSegment(s, pos);
   S.segs.splice(i, 1, a, b);
   edited();
-  renderLines(i + 1, 0);
+  renderLines(i + 1, 0, i);
 }
 
 function joinAt(i) {
