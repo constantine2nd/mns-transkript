@@ -65,6 +65,8 @@ export const STRINGS = {
     lineChanged: 'izmenjen red',
     lineLabel: 'Red {0}, {1}',
     playFrom: 'Pusti od {0}',
+    clipPlay: 'Pusti samo ovaj red ({0})',
+    clipStop: 'Zaustavi red ({0})',
     aiAcceptLine: 'Prihvati izmenu {0}',
     joinNext: 'Spoji sa sledećim',
     splitHere: 'Podeli na kursoru',

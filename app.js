@@ -671,11 +671,55 @@ function play(a) {
 function playFrom(i) {
   const s = S.segs[i];
   if (!s) return;
+  endClip();
   S.focused = i;
   if (!hasAudio()) { focusLine(i, 0); return; }
   const a = audioEl();
   a.currentTime = s.start / 1000;
   play(a);
+}
+
+// One line played on its own (AI review, version history): it stops at the line's end. A little past it, because the
+// recognised end is often a few hundred ms early and the last word gets clipped.
+const CLIP_TAIL_MS = 300;
+let clip = null; // {end, btn} while a line plays
+
+function clipButton(startMs, endMs, label) {
+  const b = el('button', 'clip', `▶ ${label}`);
+  b.type = 'button';
+  b.dataset.label = label;
+  b.setAttribute('aria-label', t('clipPlay', label));
+  b.setAttribute('aria-pressed', 'false');
+  b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleClip(startMs, endMs, b); });
+  return b;
+}
+
+function toggleClip(startMs, endMs, btn) {
+  const a = audioEl();
+  if (clip?.btn === btn && !a.paused) { a.pause(); return; } // the pause event ends the clip
+  endClip();
+  clip = { end: endMs + CLIP_TAIL_MS, btn };
+  btn.textContent = `■ ${btn.dataset.label}`;
+  btn.setAttribute('aria-label', t('clipStop', btn.dataset.label));
+  btn.setAttribute('aria-pressed', 'true');
+  a.currentTime = startMs / 1000;
+  play(a);
+}
+
+/** Resets the playing line's button; the audio itself is paused by the caller when needed. */
+function endClip() {
+  if (!clip) return;
+  const b = clip.btn;
+  clip = null;
+  b.textContent = `▶ ${b.dataset.label}`;
+  b.setAttribute('aria-label', t('clipPlay', b.dataset.label));
+  b.setAttribute('aria-pressed', 'false');
+}
+
+function stopClip() {
+  if (!clip) return;
+  endClip();
+  audioEl().pause();
 }
 
 function togglePlay() {
@@ -732,6 +776,7 @@ function updatePlayButton() {
 let seeking = false;
 let raf = 0;
 function tick() {
+  if (clip && audioEl().currentTime * 1000 >= clip.end) audioEl().pause();
   updateTime();
   raf = audioEl().paused ? 0 : requestAnimationFrame(tick);
 }
@@ -883,7 +928,7 @@ function openHistory() {
         const isChanged = was != null && was.trim().replace(/\s+/g, ' ') !== now.trim().replace(/\s+/g, ' ');
         if (isChanged) changed++;
         const row = el('li', isChanged ? 'changed' : 'same');
-        row.append(el('span', 'hist-time', clock(seg.start)));
+        row.append(hasAudio() ? clipButton(seg.start, seg.end, clock(seg.start)) : el('span', 'hist-time', clock(seg.start)));
         if (isChanged) {
           const body = el('span', 'diff');
           for (const w of ai.diff(was, now)) {
@@ -1194,10 +1239,9 @@ function openReview(r) {
     });
     const head = el('div', 'change-head');
     const seg = S.segs[c.index];
-    const where = el('button', 'ltime', `${ai.id(c.index, n)} · ${clock(seg ? seg.start : 0)}`);
-    where.type = 'button';
-    where.addEventListener('click', () => playFrom(c.index));
-    head.append(box, where);
+    const label = `${ai.id(c.index, n)} · ${clock(seg ? seg.start : 0)}`;
+    if (seg && hasAudio()) head.append(box, clipButton(seg.start, seg.end, label));
+    else head.append(box, el('span', 'ltime', label));
     if (c.doubtful) head.append(el('span', 'badge unsure', t('aiUnsure')));
     if (c.rewritten) head.append(el('span', 'badge big', t('aiBig')));
     const body = el('p', 'diff');
@@ -1207,10 +1251,10 @@ function openReview(r) {
       if (/\[\?/.test(w.text)) span.classList.add('doubt');
       body.append(span, document.createTextNode(' '));
     }
-    const label = el('label', 'change-body');
-    label.append(body);
-    li.append(head, label);
-    label.addEventListener('click', () => { box.checked = !box.checked; box.dispatchEvent(new Event('change')); });
+    const bodyLabel = el('label', 'change-body');
+    bodyLabel.append(body);
+    li.append(head, bodyLabel);
+    bodyLabel.addEventListener('click', () => { box.checked = !box.checked; box.dispatchEvent(new Event('change')); });
     list.append(li);
   }
   updateApply();
@@ -1336,6 +1380,8 @@ function wire() {
   $('#ai-copy').addEventListener('click', aiCopy);
   $('#ai-gemini').addEventListener('click', aiGemini);
   $('#dlg-ai-request').addEventListener('close', () => gemAbort?.abort());
+  $('#dlg-ai-review').addEventListener('close', stopClip);
+  $('#dlg-history').addEventListener('close', stopClip);
   $('#settings').addEventListener('click', openSettings);
   setupTheme();
   $('#gem-save').addEventListener('click', saveGemini);
@@ -1364,7 +1410,7 @@ function wire() {
   const a = audioEl();
   $('#play').addEventListener('click', togglePlay);
   a.addEventListener('play', () => { updatePlayButton(); if (!raf) raf = requestAnimationFrame(tick); });
-  a.addEventListener('pause', () => { updatePlayButton(); updateTime(); });
+  a.addEventListener('pause', () => { endClip(); updatePlayButton(); updateTime(); });
   a.addEventListener('ended', updatePlayButton);
   a.addEventListener('loadedmetadata', updateTime);
   a.addEventListener('seeked', updateTime);
