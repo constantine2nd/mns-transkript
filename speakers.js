@@ -29,10 +29,21 @@ export function colourOf(tr, id) {
   return k < 0 ? -1 : k % 6;
 }
 
+const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * A new speaker's id: random ("s-k3x9qa"), never the lowest free "sN". A removed speaker's id still lives in older
+ * versions and in other copies of the transcript, so a reused one put the new person's name on the removed
+ * person's lines, and two browsers that each made "s1" were taken for one person on import (26 Nov 2026).
+ * Ids like "s1" from before stay valid.
+ */
 function nextId(list) {
-  let n = 1;
-  while (list.some((p) => p.id === `s${n}`)) n++;
-  return `s${n}`;
+  for (;;) {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    const id = `s-${[...bytes].map((b) => ID_CHARS[b % ID_CHARS.length]).join('')}`;
+    if (!list.some((p) => p.id === id)) return id;
+  }
 }
 
 /**
@@ -42,9 +53,28 @@ function nextId(list) {
 export function addSpeaker(tr, { names = [], now = Date.now() } = {}) {
   const list = speakerList(tr);
   const id = nextId(list);
-  const name = names[list.length] ?? null;
+  // Its own side when free, else the side nobody has: after "Ja" was removed the next one was named after the
+  // contact a second time.
+  const free = (n) => n != null && !list.some((p) => p.name === n);
+  const name = list.length < names.length ? (free(names[list.length]) ? names[list.length] : names.find(free) ?? null) : null;
   tr.speakers = [...list, { id, name, renamedAt: name ? now : 0 }];
   return id;
+}
+
+/**
+ * Puts back, unnamed, every speaker that [segs] point to and the list no longer has; returns how many. The list is
+ * not part of a version, so restoring one from before a merge or removal (or importing such a copy) left lines
+ * pointing nowhere: an empty chip, no name in exports and no row in "Govornici" to fix it.
+ */
+export function ensureSpeakers(tr, segs) {
+  const list = speakerList(tr);
+  const have = new Set(list.map((p) => p.id));
+  const missing = [];
+  for (const s of segs ?? []) {
+    if (typeof s?.speaker === 'string' && s.speaker && !have.has(s.speaker)) { have.add(s.speaker); missing.push(s.speaker); }
+  }
+  if (missing.length) tr.speakers = [...list, ...missing.map((id) => ({ id, name: null, renamedAt: 0 }))];
+  return missing.length;
 }
 
 /** The id of the [n]th speaker (1-based), adding speakers up to it when there are fewer. */
@@ -137,5 +167,6 @@ export function mergeIncoming(local, incoming) {
   const merged = [];
   for (const id of order) if (!seen.has(id) && byId.has(id)) { seen.add(id); merged.push(byId.get(id)); }
   if (merged.length) incoming.speakers = merged;
+  ensureSpeakers(incoming, lines);
   return incoming;
 }

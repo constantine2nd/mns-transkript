@@ -181,6 +181,8 @@ async function renderSaved() {
     del.hidden = running; // stop it first: its run still writes to it
     del.addEventListener('click', async () => {
       if (await confirmBox(t('delete'), t('deleteConfirm', d.title || d.id), t('delete'))) {
+        // its run may have started while the question was open: the list now shows it running, without "Obriši"
+        if (ASR.current === d.id) { renderSaved(); return; }
         dequeue(d.id);
         await store.deleteDoc(d.id);
         renderSaved();
@@ -213,7 +215,7 @@ async function renderSaved() {
  * stays, so exports and imports still match it up with the other side's copy.
  */
 async function renameDoc(id) {
-  const doc = await store.getDoc(id);
+  let doc = await store.getDoc(id);
   if (!doc) return;
   const d = $('#dlg-rename');
   const input = $('#rename-input');
@@ -227,10 +229,24 @@ async function renameDoc(id) {
     d.showModal();
     input.select();
   });
-  if (!name || name === doc.title) return;
-  doc.title = name;
-  if (doc.transcript) doc.transcript.title = name;
-  await store.putDoc(doc);
+  if (!name) return;
+  // The record read before the dialog is old by now: a transcription rewrites it after every window, and writing the
+  // old one back undid the rename or a finished run. A running one is renamed in the run's own copy (it saves that
+  // one); any other is read again.
+  const setTitle = (x) => { x.title = name; if (x.transcript) x.transcript.title = name; };
+  const live = () => (ASR.doc?.id === id ? ASR.doc : null);
+  doc = live() ?? await store.getDoc(id);
+  if (!doc) return;
+  if (name !== doc.title) {
+    setTitle(doc);
+    await store.putDoc(doc);
+  }
+  // a run that read the record just before that save has the old name
+  const run = live();
+  if (run) {
+    if (run !== doc) setTitle(run);
+    $('#asr-file-name').textContent = `${run.title} · ${langName(run.asr?.lang)}`;
+  }
   renderSaved();
 }
 
@@ -372,9 +388,20 @@ async function transcribeFiles(files) {
   if (!busy && !(await asr.modelState()).downloaded
     && !(await confirmBox(t('asrDownloadTitle'), t('asrDownloadText', DOWNLOAD_MB), t('asrDownload')))) return;
   const ids = [];
-  for (const file of audio) ids.push(await addRecording(file));
-  store.persist();
-  showMsg(msg, busy || ids.length > 1 ? t('asrQueued', ids.length) : '');
+  let failed = null;
+  for (const file of audio) {
+    // A full disk fails the save: say so, stop there (the rest would fail too) and still queue what was stored.
+    try { ids.push(await addRecording(file)); } catch (e) { failed = e; break; }
+  }
+  if (failed) {
+    console.error(failed);
+    const text = t('errStorage', failed.message || String(failed));
+    showMsg(msg, ids.length ? `${text} ${t('asrQueued', ids.length)}` : text, true);
+    if (!ids.length) return;
+  } else {
+    store.persist();
+    showMsg(msg, busy || ids.length > 1 ? t('asrQueued', ids.length) : '');
+  }
   // The first run started from the start screen shows its progress; anything added later just waits its turn.
   enqueue(ids, { show: !busy && !$('#start').hidden });
 }
@@ -419,7 +446,21 @@ function dequeue(id) {
 
 async function pump() {
   if (ASR.current != null || !ASR.queue.length) return;
-  await runAsr(ASR.queue.shift());
+  const id = ASR.queue.shift();
+  // Taken before the first await: runAsr reads the record first, and a second enqueue in that gap saw nothing
+  // running and started a second run on the same worker.
+  ASR.current = id;
+  ASR.stop = false; // here, not after runAsr's first await: a "Zaustavi" pressed during that read was dropped
+  try {
+    await runAsr(id);
+  } finally {
+    if (ASR.current === id) { // runAsr left before it started (no WebGPU, or nothing left to transcribe)
+      ASR.current = null;
+      ASR.status = { text: '', fraction: null };
+      updateAsrStatus();
+      if ($('#editor').hidden) renderSaved();
+    }
+  }
   pump();
 }
 
@@ -505,9 +546,9 @@ async function runAsr(id) {
   if (!ASR.ok) { notify(ASR.why || t('asrNoWebgpu'), true); return; }
   const doc = await store.getDoc(id);
   if (!doc?.asr) return;
+  if (ASR.stop) { $('#dlg-asr').close(); return; } // stopped while the record was read: it stays resumable
   ASR.running = true;
-  ASR.current = id;
-  ASR.stop = false;
+  ASR.doc = doc; // the copy this run saves after every window; a rename goes into it
   ASR.status = { text: '', fraction: null };
   const dlg = $('#dlg-asr');
   // The language chosen when it started: a resume keeps it, whatever the selector says now.
@@ -621,6 +662,7 @@ async function runAsr(id) {
     ASR.running = false;
     ASR.loading = false;
     ASR.current = null;
+    ASR.doc = null;
     ASR.status = { text: '', fraction: null };
     diagEnd(diag);
     // Still watching: with more waiting the dialog stays open for the next one; with none left, the result opens
@@ -646,6 +688,15 @@ async function runAsr(id) {
 /** "Zaustavi": ends the current run after its window and empties the queue; all stay resumable from the list. */
 function stopAsr() {
   ASR.queue = [];
+  // Between two queued runs nothing is running, and the dialog was kept open for the next one: with the queue now
+  // empty no run would ever close it, and it stayed on "Zaustavljam…".
+  if (ASR.current == null) {
+    ASR.show = false;
+    $('#dlg-asr').close();
+    updateAsrStatus();
+    if ($('#editor').hidden) renderSaved();
+    return;
+  }
   ASR.stop = true;
   $('#asr-stop').disabled = true;
   setAsrPhase(t('asrStopping'), null);
@@ -671,6 +722,7 @@ async function openDoc(id) {
   S.hasEdited = doc.transcript.editedSegments != null;
   S.pendingEdit = false;
   S.segs = effective(doc.transcript).map(lineCopy);
+  spk.ensureSpeakers(doc.transcript, S.segs); // mends a transcript restored or imported before this check existed
   S.current = -1;
   S.focused = -1;
   $('#start').hidden = true;
@@ -799,7 +851,7 @@ function lineRow(i, tags) {
   ta.setAttribute('aria-label', t('lineLabel', i + 1, clock(s.start)));
   ta.rows = 1;
   ta.spellcheck = true;
-  ta.lang = 'sr';
+  ta.lang = docLang(); // the spelling check follows the transcript's language, not always Serbian
   ta.value = display(s.text);
   ta.addEventListener('input', () => onInput(i, ta));
   ta.addEventListener('focus', () => { S.focused = i; });
@@ -1309,7 +1361,9 @@ function openHistory() {
     if (v.device === 'phone' || v.device === 'web') parts.push(t(v.device === 'phone' ? 'devPhone' : 'devWeb'));
     if (i > 0) {
       const n = hist.linesChanged(hist.textOf(tr, all[i - 1]), text);
-      parts.push(n == null ? t('histResplit') : changedLabel(n));
+      // a version that only marks who is talking is not "0 redova izmenjeno"
+      const onlySpeakers = n === 0 && hist.speakersChanged(hist.textOf(tr, all[i - 1]), text) > 0;
+      parts.push(n == null ? t('histResplit') : onlySpeakers ? t('histSpeakersOnly') : changedLabel(n));
     }
     const li = el('li', i === all.length - 1 ? 'hist-item current' : 'hist-item');
     const head = el('div', 'hist-head');
@@ -1348,7 +1402,11 @@ function openHistory() {
       // Only what changed against the previous version; v1 (nothing before it) shows its whole text.
       if (i > 0) {
         ol.classList.add('only-changed');
-        if (changed === 0) { det.append(el('p', 'muted hist-none', t('histNoTextChange'))); return; }
+        if (changed === 0) {
+          const onlySpeakers = hist.speakersChanged(hist.textOf(tr, all[i - 1]), text) > 0;
+          det.append(el('p', 'muted hist-none', t(onlySpeakers ? 'histOnlySpeakers' : 'histNoTextChange')));
+          return;
+        }
       }
       det.append(ol);
     });
@@ -1366,6 +1424,7 @@ async function restoreVersion(n) {
   if (target === undefined) return;
   S.hasEdited = target !== null;
   S.segs = (target ?? S.doc.transcript.segments).map(lineCopy);
+  spk.ensureSpeakers(S.doc.transcript, S.segs); // speakers merged or removed since that version come back, unnamed
   recordVersion('restore', target, n);
   renderLines();
   await saveNow();
@@ -1457,7 +1516,9 @@ function exportAs(kind) {
   who.checked = hasSpeakers && cols.speaker;
   $('#ex-speaker-field').hidden = !hasSpeakers;
   $('#ex-go').onclick = () => {
-    prefs.exportCols = { ...(prefs.exportCols ?? {}), [kind]: { time: time.checked, speaker: who.checked } };
+    // With no speakers the box is hidden and unticked: saving that switched the column off for the next transcript
+    // that has them. Keep what was remembered.
+    prefs.exportCols = { ...(prefs.exportCols ?? {}), [kind]: { time: time.checked, speaker: hasSpeakers ? who.checked : cols.speaker } };
     savePrefs();
     d.close();
     writeExport(kind, { time: time.checked, speaker: hasSpeakers && who.checked });

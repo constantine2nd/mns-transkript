@@ -181,6 +181,17 @@ export async function generate(key, model, turns, { fetchFn = fetch, signal, onW
 }
 
 /**
+ * A part of the answer up to its "Doubtful" list. Every part ends with one, and reading the joined answer stops at
+ * the first (ai.js parseAnswer, which has the same test for the heading): with the list left in, an answer of three
+ * or more parts lost everything after the second and used up all the rounds asking for the same lines.
+ */
+function withoutDoubtfulList(text) {
+  const lines = text.split(/\r\n|\n|\r/);
+  const at = lines.findIndex((raw) => raw.trim().replace(/^`+|`+$/g, '').trim().replace(/^[#*_>\- ]+/, '').toLowerCase().startsWith('doubtful'));
+  return at < 0 ? text : lines.slice(0, at).join('\n');
+}
+
+/**
  * Sends the request and, while the answer stops early (the model says "Continue from #NNN", or ran out of
  * tokens), asks for the rest, up to MAX_ROUNDS. `nextFrom(answerSoFar)` returns the 1-based id of the first line
  * still missing after the last one received, or null when the answer is complete. Returns all the answers joined.
@@ -188,12 +199,14 @@ export async function generate(key, model, turns, { fetchFn = fetch, signal, onW
 export async function correct(key, model, prompt, nextFrom, { fetchFn = fetch, signal, onRound, onWait, wait, idOf } = {}) {
   const turns = [{ role: 'user', text: prompt }];
   let all = '';
+  let done = ''; // the earlier parts, each without its "Doubtful" list
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     onRound?.(round);
     const { text } = await generate(key, model, turns, { fetchFn, signal, onWait, wait });
-    all += (all ? '\n' : '') + text;
+    all = (done ? `${done}\n` : '') + text;
     const from = nextFrom(all);
     if (from == null) break;
+    done += (done ? '\n' : '') + withoutDoubtfulList(text);
     turns.push({ role: 'model', text });
     turns.push({ role: 'user', text: `Continue from ${idOf ? idOf(from) : `#${from}`}. Same rules and format: only the remaining lines, then the "Doubtful" list.` });
   }

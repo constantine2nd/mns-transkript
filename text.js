@@ -128,19 +128,29 @@ export function toTxt(segments, { header = null, tags = [], nameOf = () => '', t
   return out;
 }
 
+/**
+ * A line's text for a subtitle cue: no empty rows. Enter in the editor puts a new row into a line, and an empty
+ * one ends the cue, so the rest of the text became a broken block that players drop.
+ */
+const cueText = (text) => String(text ?? '').split(/\r\n|\n|\r/).map((row) => row.trim()).filter(Boolean).join('\n');
+
 export function toSrt(segments, { nameOf = () => '' } = {}) {
   return segments.map((s, i) => {
     const who = nameOf(s);
-    return `${i + 1}\n${stamp(s.start, ',')} --> ${stamp(s.end, ',')}\n${who ? `${who}: ` : ''}${s.text}\n\n`;
+    return `${i + 1}\n${stamp(s.start, ',')} --> ${stamp(s.end, ',')}\n${who ? `${who}: ` : ''}${cueText(s.text)}\n\n`;
   }).join('');
 }
 
-/** VTT names a speaker with its own voice tag: <v Pera>text. */
+/**
+ * VTT names a speaker with its own voice tag: <v Pera>text. In the text "&", "<" and ">" are written as entities:
+ * VTT reads "<" as the start of a tag, and "-->" may not appear in a cue.
+ */
 export function toVtt(segments, { nameOf = () => '' } = {}) {
   const voice = (n) => n.replace(/[<>&]/g, '');
   return 'WEBVTT\n\n' + segments.map((s) => {
     const who = nameOf(s);
-    return `${stamp(s.start, '.')} --> ${stamp(s.end, '.')}\n${who ? `<v ${voice(who)}>` : ''}${s.text}\n\n`;
+    const text = cueText(s.text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `${stamp(s.start, '.')} --> ${stamp(s.end, '.')}\n${who ? `<v ${voice(who)}>` : ''}${text}\n\n`;
   }).join('');
 }
 

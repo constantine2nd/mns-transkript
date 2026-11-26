@@ -183,6 +183,8 @@ export const STRINGS = {
     histChanged2: '{0} reda izmenjena',
     histChanged5: '{0} redova izmenjeno',
     histResplit: 'drugačija podela redova',
+    histSpeakersOnly: 'promenjeno ko govori',
+    histOnlySpeakers: 'Tekst je isti kao u prethodnoj verziji; promenjeno je samo ko govori.',
     histCurrent: 'trenutna',
     histShow: 'Prikaži tekst',
     histNoTextChange: 'Tekst se nije promenio u odnosu na prethodnu verziju (samo podela redova ili razmaci).',

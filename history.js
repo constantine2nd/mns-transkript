@@ -120,6 +120,14 @@ export function restoreTarget(transcript, n) {
   return v === undefined ? undefined : copySegs(v.segments);
 }
 
+/** How many lines differ in who is talking, for two texts with the same line count; null when the counts differ. */
+export function speakersChanged(before, after) {
+  if (before.length !== after.length) return null;
+  let n = 0;
+  for (let i = 0; i < before.length; i++) if ((before[i].speaker ?? null) !== (after[i].speaker ?? null)) n++;
+  return n;
+}
+
 /** How many lines differ in text between two texts with the same line count; null when the counts differ. */
 export function linesChanged(before, after) {
   if (before.length !== after.length) return null;
