@@ -15,17 +15,23 @@ export function answerFileName(base) {
 
 /**
  * @param {{text: string}[]} segments  @param {boolean} latin  @param {string} base
- * @param {{direct?: boolean}} [opts] direct: for the Gemini API (web only, not in the phone's AiExchange): the
- *   answer comes back as the reply's text, so the lines are asked for as plain text instead of a file.
+ * @param {{direct?: boolean, lang?: string}} [opts] direct: for the Gemini API: the answer comes back as the
+ *   reply's text, so the lines are asked for as plain text instead of a file. lang: the transcript's language;
+ *   'en' asks to keep English (latin is then unused), anything else gets the Serbian request.
  */
-export function request(segments, latin, base, { direct = false } = {}) {
+export function request(segments, latin, base, { direct = false, lang = 'sr' } = {}) {
   const n = segments.length;
   const script = latin ? 'Latin' : 'Cyrillic';
   const otherScript = latin ? 'Cyrillic' : 'Latin';
   let out = [
-    'You are correcting an automatic speech-recognition transcript of a Serbian conversation.',
-    `The text is Serbian, ekavian, ${script} script. Keep it that way: do not translate, do not`,
-    `switch to ${otherScript}, do not change ekavian to ijekavian.`,
+    ...(lang === 'en' ? [
+      'You are correcting an automatic speech-recognition transcript of an English conversation.',
+      'The text is English. Keep it that way: do not translate it.',
+    ] : [
+      'You are correcting an automatic speech-recognition transcript of a Serbian conversation.',
+      `The text is Serbian, ekavian, ${script} script. Keep it that way: do not translate, do not`,
+      `switch to ${otherScript}, do not change ekavian to ijekavian.`,
+    ]),
     '',
     'Fix only clear recognition errors: misheard or misspelled words, wrongly joined or split',
     'words, punctuation, capital letters, and numbers written inconsistently.',

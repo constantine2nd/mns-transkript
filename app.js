@@ -50,7 +50,10 @@ function savePrefs() {
 }
 
 // Both directions: a transcript mixes scripts (Whisper writes Cyrillic, Parakeet drafts and edits are Latin).
-const display = (text) => (prefs.latin ? toLatin(text) : toCyrillic(text));
+// Only Serbian text: an English transcript (web editor, 1.9) is shown as stored, Cyrillic would garble it.
+const docLang = () => S.doc?.transcript?.language || 'sr';
+const scriptApplies = (lang = docLang()) => lang !== 'en';
+const display = (text, lang = docLang()) => (!scriptApplies(lang) ? text : prefs.latin ? toLatin(text) : toCyrillic(text));
 const displayedSegs = () => S.segs.map((s) => ({ ...s, text: display(s.text) }));
 
 // ------------------------------------------------------------------ i18n in markup
@@ -375,7 +378,7 @@ async function runAsr(id) {
         const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1]), st.lang || 'sr'), pcm, w);
         st.pieces.push(...placed);
         if (placed.length) {
-          $('#asr-last').textContent = display(placed.at(-1).text);
+          $('#asr-last').textContent = display(placed.at(-1).text, st.lang || 'sr');
           $('#asr-last').hidden = false;
         }
       }
@@ -629,7 +632,7 @@ function splitAt(i, ta) {
   // The cursor is in the displayed text; split the stored text at the same letter so Cyrillic stays Cyrillic.
   let pos;
   if (ta.value === s.text) pos = ta.selectionStart;
-  else if (prefs.latin) pos = displayPosToStored(s.text, ta.selectionStart);
+  else if (prefs.latin && scriptApplies()) pos = displayPosToStored(s.text, ta.selectionStart);
   else { s.text = ta.value; pos = ta.selectionStart; } // Cyrillic view of Latin text: keep the line as shown, like a typed edit
   const [a, b] = splitSegment(s, pos);
   S.segs.splice(i, 1, a, b);
@@ -958,7 +961,7 @@ function aiRequest() {
   const shown = displayedSegs();
   if (shown.length === 0) { flash(t('aiNothing'), true); return; }
   const base = baseName(S.doc.title);
-  const text = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), base);
+  const text = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), base, { lang: docLang() });
   $('#ai-request-text').value = text;
   $('#ai-request-note').textContent = t('aiRequestText', ai.answerFileName(base));
   showMsg($('#ai-request-msg'), '');
@@ -1000,7 +1003,7 @@ async function aiGemini() {
   if (shown.length === 0) { flash(t('aiNothing'), true); return; }
   const sent = ai.lines(shown);
   const n = sent.length;
-  const prompt = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), baseName(S.doc.title), { direct: true });
+  const prompt = ai.request(shown, ai.mostlyLatin(shown.map((s) => s.text)), baseName(S.doc.title), { direct: true, lang: docLang() });
   const msg = $('#ai-request-msg');
   const btn = $('#ai-gemini');
   gemAbort = new AbortController();
@@ -1253,10 +1256,14 @@ async function reviewApply() {
 // ---------------- script toggle
 
 function updateScriptButtons() {
-  $('#script-lat').classList.toggle('on', prefs.latin);
-  $('#script-cyr').classList.toggle('on', !prefs.latin);
-  $('#script-lat').setAttribute('aria-pressed', String(prefs.latin));
-  $('#script-cyr').setAttribute('aria-pressed', String(!prefs.latin));
+  const on = scriptApplies();
+  for (const [sel, pressed] of [['#script-lat', prefs.latin], ['#script-cyr', !prefs.latin]]) {
+    const b = $(sel);
+    b.classList.toggle('on', on && pressed);
+    b.setAttribute('aria-pressed', String(on && pressed));
+    b.disabled = !on;
+    b.title = on ? '' : t('scriptSerbianOnly');
+  }
 }
 
 function setLatin(on) {

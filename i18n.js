@@ -157,6 +157,7 @@ export const STRINGS = {
     asrLang: 'Jezik snimka',
     asrLangSr: 'Srpski',
     asrLangEn: 'Engleski (English)',
+    scriptSerbianOnly: 'Latinica i ćirilica su samo za srpski tekst. Ovaj zapis je na engleskom.',
     asrModelReady: 'Model za prepoznavanje govora je preuzet ({0}).',
     asrModelMissing: 'Prvi put se preuzima model za prepoznavanje govora (oko {0} MB, sa huggingface.co).',
     asrDeleteModel: 'Obriši preuzeti model',
