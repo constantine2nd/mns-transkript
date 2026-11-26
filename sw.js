@@ -1,11 +1,13 @@
 // Offline app shell (the vendor/ files for transcription are cached when first used): files come from the network when it answers and from the cache when offline, so a page
 // never runs a mix of versions. The cache is named after version.js: bump APP_VERSION there to replace it.
-importScripts('version.js');
-const VERSION = `mns-transkript-${self.APP_VERSION}`;
+importScripts('version.js', 'brand.js');
+// Per brand: two brands on one origin keep separate caches and never delete each other's.
+const PREFIX = `${self.BRAND.storage}-`;
+const VERSION = `${PREFIX}${self.APP_VERSION}`;
 const SHELL = [
   './', 'index.html', 'version.js', 'theme.js', 'install.js', 'style.css', 'app.js', 'i18n.js', 'zip.js', 'bundle.js', 'ai.js', 'text.js', 'store.js', 'history.js',
   'speech.js', 'asr.js', 'asr-model.js', 'asr-worker.js', 'opfs.js', 'gemini.js',
-  'manifest.webmanifest', 'assets/mns-logo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png',
+  'brand.js', 'brand.css', 'manifest.webmanifest', self.BRAND.logo, ...self.BRAND.icons,
 ];
 
 self.addEventListener('install', (e) => {
@@ -15,7 +17,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('mns-transkript-') && k !== VERSION).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith(PREFIX) && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });

@@ -1,49 +1,51 @@
-/* Moj Novi Sad — Transkript. Colors from mojnovisad.com's theme (wp-content/themes/mns/assets/dist/css/mns.css):
-   brand yellow #ffc11b, text #1a1a1a, page #fafafa, dark bar #28282d, borders #ebebeb / #d8d8d8, red #b0282b.
-   The site's fonts (Instrument Sans, Inter) are used only when installed locally; no web fonts are loaded. */
+/* Transkript: the shared stylesheet. These are the neutral default colours; each brand overrides them in its
+   generated brand.css (from brands/<id>/brand.json, loaded after this file), and tools/brand.mjs checks every
+   brand's final colours for contrast. Keep the variable names in step with COLOR_KEYS there. */
 
 :root {
-  --brand: #ffc11b;
-  --brand-strong: #ffba01;
-  --on-brand: #1a1a1a;
-  --bg: #fafafa;
+  --brand: #2457c5;
+  --brand-strong: #1c4aa8;
+  --on-brand: #ffffff;
+  --bg: #f7f8fa;
   --surface: #ffffff;
-  --text: #1a1a1a;
-  --muted: #62748e;
-  --border: #ebebeb;
-  --border-strong: #d8d8d8;
+  --text: #1a1d23;
+  --muted: #5d6675;
+  --border: #e6e8ec;
+  --border-strong: #d3d7de;
   --red: #b0282b;
   --ins: #0d6b2f;
-  --hl: rgba(255, 193, 27, 0.28);
-  /* 1.4.11: markers need 3:1. The brand yellow is 1.56:1 on the light page; this amber is 4.49:1 (3.93:1 on a playing line). */
+  --hl: rgba(36, 87, 197, 0.14);
+  /* 1.4.11: markers need 3:1 against the line, also on a playing (highlighted) line. */
   --changed: #9a6b00;
-  --mark: #946300; /* the ★ is a glyph: 4.98:1, text level */
-  --focus: #1a1a1a;
+  --mark: #946300; /* the ★ is a glyph: text level, 4.5:1 */
+  --focus: #1a1d23;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   --radius: 8px;
-  --font: "Instrument Sans", Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
 }
 
 /* Dark: chosen in the editor, or following the system (theme.js sets data-theme before the page is drawn). */
 :root[data-theme="dark"] {
-    --bg: #1a1a1a;
-    --surface: #28282d;
-    --text: #ebebeb;
+    --brand: #7aa2ff;
+    --brand-strong: #94b4ff;
+    --on-brand: #0b1020;
+    --bg: #16181d;
+    --surface: #23262d;
+    --text: #e9ebef;
     --muted: #a3acb9;
-    --border: #3a3a40;
-    --border-strong: #4a4a52;
+    --border: #383c45;
+    --border-strong: #4a4f5a;
     --red: #ff6b6e;
     --ins: #6ee79a;
-    --hl: rgba(255, 193, 27, 0.18);
-    --focus: #ffc11b;
+    --hl: rgba(122, 162, 255, 0.18);
+    --focus: #7aa2ff;
     --changed: #ffc11b;
     --mark: #ffc11b;
     --shadow: none;
     color-scheme: dark;
 }
-:root[data-theme="dark"] .logo { filter: invert(1); }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -125,6 +127,8 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 .drop:hover, .drop.over { border-color: var(--brand); background: var(--hl); }
 .drop-title { font-size: 1.3rem; font-weight: 700; }
 .drop-hint { color: var(--muted); }
+/* On the hover tint grey text fell to 3.99:1 (26 Nov 2026, Moj Novi Sad yellow); like a playing line's time, it turns full colour. */
+.drop:hover .drop-hint, .drop.over .drop-hint { color: var(--text); }
 .asr-card {
   display: flex;
   flex-wrap: wrap;

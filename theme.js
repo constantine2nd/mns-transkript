@@ -1,7 +1,7 @@
 // Light or dark: the user's choice (prefs.theme: "system", "light", "dark"), else the system's. Loaded in <head>
 // before the page is drawn, so a dark choice never flashes light first. app.js changes it through self.setTheme.
 (function () {
-  const KEY = 'mns-transkript-prefs';
+  const KEY = `${self.BRAND?.storage ?? 'transkript'}-prefs`; // app.js's PREFS_KEY
   let pref = 'system';
   try { pref = JSON.parse(localStorage.getItem(KEY) || '{}').theme || 'system'; } catch { /* private mode */ }
   const mq = matchMedia('(prefers-color-scheme: dark)');

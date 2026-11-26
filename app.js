@@ -1,4 +1,4 @@
-// Moj Novi Sad — Transkript: the editor UI. Logic without the DOM lives in the other modules (and their tests).
+// Transkript: the editor UI (branded per brands/<id>, see tools/build.mjs). Logic without the DOM lives in the other modules (and their tests).
 
 import { t } from './i18n.js';
 import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle } from './bundle.js';
@@ -23,7 +23,7 @@ const MAX_AI_ANSWER_BYTES = 4 * 1024 * 1024;
 const SAVE_DELAY_MS = 600;
 /** A version is saved by itself after this long without typing (and on Nazad, leaving or refreshing the page). */
 const VERSION_IDLE_MS = 60_000;
-const PREFS_KEY = 'mns-transkript-prefs';
+const PREFS_KEY = `${self.BRAND?.storage ?? 'transkript'}-prefs`; // also read by theme.js
 
 // ------------------------------------------------------------------ state
 

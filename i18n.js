@@ -3,8 +3,8 @@
 
 export const STRINGS = {
   sr: {
-    appName: 'Moj Novi Sad — Transkript',
-    appShort: 'Transkript',
+    appName: globalThis.BRAND?.name ?? 'Transkript',
+    appShort: globalThis.BRAND?.shortName ?? 'Transkript',
     privacy: 'Fajlovi ostaju na ovom računaru — na internet ide samo tekst koji sam pošalješ Gemini-ju.',
     dropTitle: 'Otvori paket sa telefona',
     dropHint: 'Prevuci ovde „… - editor.zip“ ili klikni da izabereš fajl.',

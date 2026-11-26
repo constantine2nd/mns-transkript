@@ -1,7 +1,8 @@
 // IndexedDB persistence: one "docs" record per transcript id (the JSON and fingerprints), the audio Blob
 // apart in "audio" so autosaving text never rewrites the recording.
 
-const DB_NAME = 'mns-transkript';
+// Per brand (brand.js): two brands on one origin must not see each other's transcripts.
+const DB_NAME = globalThis.BRAND?.storage ?? 'transkript';
 const DB_VERSION = 1;
 let dbPromise = null;
 

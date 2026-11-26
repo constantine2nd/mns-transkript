@@ -3,7 +3,7 @@
 // recording. The key is kept in this browser's localStorage and goes only to Google, in a header.
 
 const API = 'https://generativelanguage.googleapis.com/v1beta';
-const STORE_KEY = 'mns-transkript-gemini';
+const STORE_KEY = `${globalThis.BRAND?.storage ?? 'transkript'}-gemini`; // per brand (brand.js)
 /**
  * Used only until the key's model list is known; then the newest Flash model on the list is picked
  * (25 Nov 2026 free tier: 3.8 Flash and 3.6 Flash, 5 requests/min and 20/day; 3.5 Flash Lite, 15/min and 500/day).
