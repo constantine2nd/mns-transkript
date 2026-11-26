@@ -112,28 +112,7 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 .btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
 
 /* ---------- start screen */
-.drop {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 48px 16px;
-  border: 2px dashed var(--border-strong);
-  border-radius: 14px;
-  background: var(--surface);
-  text-align: center;
-  cursor: pointer;
-}
-.drop:hover, .drop.over { border-color: var(--brand); background: var(--hl); }
-.drop-title { font-size: 1.3rem; font-weight: 700; }
-.drop-hint { color: var(--muted); }
-/* On the hover tint grey text fell to 3.99:1 (26 Nov 2026, Moj Novi Sad yellow); like a playing line's time, it turns full colour. */
-.drop:hover .drop-hint, .drop.over .drop-hint { color: var(--text); }
 .asr-card {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 20px;
   margin-top: 16px;
   padding: 16px 18px;
   background: var(--surface);
@@ -143,25 +122,46 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 }
 .asr-card h2 { margin: 0 0 4px; font-size: 1.15rem; }
 .asr-card p { margin: 4px 0; }
-.asr-text { flex: 1 1 320px; min-width: 0; }
-.asr-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.asr-card .inline-field { margin: 10px 0 0; }
+.drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 16px;
+  margin: 12px 0 8px;
+  padding: 28px 16px;
+  border: 2px dashed var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg);
+  text-align: center;
+}
+.drop.over { border-color: var(--brand); background: var(--hl); }
+.drop-hint { color: var(--muted); font-size: 1.05rem; }
+/* On the drag tint grey text fell to 3.99:1 (26 Nov 2026, Moj Novi Sad yellow); like a playing line's time, it turns full colour. */
+.drop.over .drop-hint { color: var(--text); }
+.inline-check { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 0.9rem; cursor: pointer; }
 .asr-why { margin: 6px 0 0; padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--border-strong); }
 .small { font-size: 0.88rem; }
 .asr-bar { width: 100%; height: 14px; accent-color: var(--brand-strong); }
 .asr-last { margin: 8px 0; padding: 8px 12px; border-radius: var(--radius); background: var(--bg); font-size: 0.92rem; overflow-wrap: anywhere; }
 .saved { margin-top: 28px; }
+.saved-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 0.6rem; }
+.saved-head h2 { margin: 0; }
 .saved-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .saved-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
-.saved-info { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+/* With less than about 18rem left for the name and date, the buttons wrap to a row below (narrow screens). */
+.saved-info { flex: 1 1 18rem; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .saved-info strong { overflow-wrap: anywhere; }
 .badge {
   display: inline-block;
@@ -189,7 +189,34 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 .save-state { font-size: 0.85rem; padding-top: 6px; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 10px; }
-.toolbar .group { display: inline-flex; gap: 4px; align-items: center; padding: 0 6px; }
+.menu-wrap { position: relative; display: inline-flex; }
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 100%;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.menu[hidden] { display: none; }
+.menu-item {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--hl); }
 
 .player {
   position: sticky;
@@ -363,7 +390,6 @@ progress { width: 100%; height: 8px; accent-color: var(--brand-strong); }
 @media (max-width: 640px) {
   .line { grid-template-columns: 3.8rem 1rem 1fr 1.8rem; }
   .ljoin { opacity: 1; }
-  .toolbar .group { padding: 0; }
 }
 
 /* Version line in the header, small and quiet. */
@@ -379,6 +405,9 @@ progress { width: 100%; height: 8px; accent-color: var(--brand-strong); }
 .brand-inner .install { margin-left: auto; white-space: nowrap; }
 .brand-inner .settings, .brand-inner .theme { white-space: nowrap; }
 .brand-inner .install[hidden] + .theme { margin-left: auto; }
+/* A running transcription's button takes the right end's place; whatever follows it then sits beside it. */
+.brand-inner .asr-pill { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.brand-inner .asr-pill:not([hidden]) ~ .install, .brand-inner .asr-pill:not([hidden]) ~ .theme { margin-left: 0; }
 .theme-icon { display: inline-block; width: 1.1em; text-align: center; }
 .field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; font-size: 0.9rem; }
 .inline-field { flex-direction: row; align-items: center; gap: 8px; margin: 8px 0 0; }

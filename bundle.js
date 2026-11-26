@@ -7,6 +7,31 @@ import { baseName } from './text.js';
 export const FORMAT = 'transcribe-bundle';
 export const VERSION = 1;
 export const AUDIO_ENTRY = 'audio.m4a';
+
+// The recording travels in its own format as audio.<ext> (docs/bundle-format.md): the phone sends m4a, the editor
+// the file it was given. Both sides decode any of these.
+const TYPES = {
+  m4a: 'audio/mp4', mp4: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg',
+  opus: 'audio/ogg', aac: 'audio/aac', flac: 'audio/flac', amr: 'audio/amr', '3gp': 'audio/3gpp', webm: 'audio/webm',
+};
+const EXTS = {
+  'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/m4a': 'm4a', 'video/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
+  'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/aac': 'aac',
+  'audio/flac': 'flac', 'audio/x-flac': 'flac', 'audio/amr': 'amr', 'audio/3gpp': '3gp', 'audio/webm': 'webm',
+};
+const AUDIO_NAME = /^audio\.([a-z0-9]{2,4})$/;
+
+/** The bundle entry for a recording of MIME [type] (else named by [fileName]'s extension): "audio.<ext>". */
+export function audioEntry(type, fileName = '') {
+  const fromName = /\.([a-z0-9]{2,4})$/i.exec(fileName)?.[1]?.toLowerCase();
+  // The file's own extension first: a recording picked without a MIME type was stored as audio/mp4.
+  return `audio.${(fromName in TYPES ? fromName : null) ?? EXTS[(type || '').split(';')[0].trim().toLowerCase()] ?? 'm4a'}`;
+}
+
+/** The MIME type to store a bundle's recording under, from its entry name. */
+export function audioType(entry) {
+  return TYPES[AUDIO_NAME.exec(entry || '')?.[1]] ?? 'audio/mp4';
+}
 const MAX_JSON_BYTES = 16 * 1024 * 1024;
 
 export class BadBundle extends Error {
@@ -76,15 +101,16 @@ export async function parseBundle(bytes, zipOpts) {
   }
   if (!envelope.transcriptId) throw new BadBundle('errTranscript', 'id');
   let audio = null;
-  if (envelope.audio && byName.has(envelope.audio)) audio = await byName.get(envelope.audio).read();
-  return { envelope, transcript, audio };
+  if (envelope.audio && AUDIO_NAME.test(envelope.audio) && byName.has(envelope.audio)) audio = await byName.get(envelope.audio).read();
+  return { envelope, transcript, audio, audioType: audio ? audioType(envelope.audio) : null };
 }
 
 /**
- * Builds the bundle the editor sends back: the loaded transcript object with every key kept, only
- * editedSegments replaced. [baseFingerprint] is the fingerprint of the text as it came from the phone.
+ * Builds a bundle of [transcript] (every key kept, editedSegments replaced) for the phone or another browser.
+ * [baseFingerprint] is the fingerprint of the text as it came in (or as made here); [audio], {name, data}, is the
+ * recording, named by audioEntry().
  */
-export function buildBundle({ transcript, editedSegments, baseFingerprint, baseSegments = null, now = Date.now() }) {
+export function buildBundle({ transcript, editedSegments, baseFingerprint, baseSegments = null, audio = null, now = Date.now() }) {
   const t = { ...transcript, editedSegments: editedSegments ?? null };
   const env = {
     format: FORMAT,
@@ -94,13 +120,14 @@ export function buildBundle({ transcript, editedSegments, baseFingerprint, baseS
     title: String(transcript.title ?? ''),
     exportedAt: now,
     baseFingerprint,
-    audio: null,
+    audio: audio ? audio.name : null,
   };
   // The phone's text as loaded, so the phone can offer only the lines changed here (three-way compare).
   if (baseSegments) env.baseSegments = baseSegments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
   const zip = writeZip([
     { name: 'bundle.json', data: JSON.stringify(env, null, 2) },
     { name: 'transcript.json', data: JSON.stringify(t) },
+    ...(audio ? [{ name: audio.name, data: audio.data }] : []),
   ], new Date(now));
   return { bytes: zip, fileName: `${baseName(transcript.title)} - editor.zip` };
 }

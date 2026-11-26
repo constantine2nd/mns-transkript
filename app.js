@@ -1,7 +1,8 @@
 // Transkript: the editor UI (branded per brands/<id>, see tools/build.mjs). Logic without the DOM lives in the other modules (and their tests).
 
 import { t } from './i18n.js';
-import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle } from './bundle.js';
+import { toDocx, docxLang, DOCX_TYPE } from './docx.js';
+import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle, audioEntry } from './bundle.js';
 import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers } from './text.js';
 import * as ai from './ai.js';
 import * as store from './store.js';
@@ -158,21 +159,77 @@ async function renderSaved() {
     info.append(meta);
     info.append(langBadge(d.transcript?.language || d.asr?.lang));
     if (d.currentFp && d.currentFp !== d.loadedFp && !d.asr) info.append(el('span', 'badge', t('edited')));
-    if (d.asr) info.append(el('span', 'badge unsure', t('asrUnfinished', asrPercent(d))));
-    const open = el('button', 'btn primary small', d.asr ? t('asrResume') : t('open'));
+    li.dataset.id = d.id;
+    const running = ASR.current === d.id;
+    const queued = ASR.queue.includes(d.id);
+    if (running) info.append(el('span', 'badge asr-live', t('asrRunningPct', asrPercent(d))));
+    else if (queued) info.append(el('span', 'badge', t('asrQueuedBadge', ASR.queue.indexOf(d.id) + 1)));
+    else if (d.asr) info.append(el('span', 'badge unsure', t('asrUnfinished', asrPercent(d))));
+    const open = el('button', 'btn primary small', running ? t('asrShow') : queued ? t('asrUnqueue') : d.asr ? t('asrResume') : t('open'));
     open.type = 'button';
-    open.addEventListener('click', () => (d.asr ? runAsr(d.id) : openDoc(d.id)));
+    if (queued) open.className = 'btn small';
+    open.addEventListener('click', () => {
+      if (running) $('#dlg-asr').showModal();
+      else if (queued) dequeue(d.id);
+      else if (d.asr) enqueue([d.id]);
+      else openDoc(d.id);
+    });
     const del = el('button', 'btn ghost small', t('delete'));
     del.type = 'button';
+    del.hidden = running; // stop it first: its run still writes to it
     del.addEventListener('click', async () => {
       if (await confirmBox(t('delete'), t('deleteConfirm', d.title || d.id), t('delete'))) {
+        dequeue(d.id);
         await store.deleteDoc(d.id);
         renderSaved();
       }
     });
-    li.append(info, open, del);
+    const ren = el('button', 'btn ghost small', t('rename'));
+    ren.type = 'button';
+    ren.setAttribute('aria-label', t('renameOf', d.title || d.id));
+    ren.addEventListener('click', () => renameDoc(d.id));
+    const actions = [open];
+    if (!d.asr) {
+      // The same export as in the editor, without opening it; an unfinished transcription has nothing to send yet.
+      const exp = el('button', 'btn small', t('saveForPhone'));
+      exp.type = 'button';
+      exp.title = t('saveForPhoneHint');
+      exp.setAttribute('aria-label', t('exportOf', d.title || d.id));
+      exp.addEventListener('click', async () => {
+        const msg = await exportDoc(d, d.transcript.editedSegments ?? null);
+        if (msg) showMsg($('#start-msg'), msg);
+      });
+      actions.push(exp);
+    }
+    li.append(info, ...actions, ren, del);
     list.append(li);
   }
+}
+
+/**
+ * Gives a saved transcript a new name: shown here and in the editor, and used for the exported files' names. The id
+ * stays, so exports and imports still match it up with the other side's copy.
+ */
+async function renameDoc(id) {
+  const doc = await store.getDoc(id);
+  if (!doc) return;
+  const d = $('#dlg-rename');
+  const input = $('#rename-input');
+  input.value = doc.title || '';
+  const name = await new Promise((resolve) => {
+    let value = null;
+    const save = () => { value = input.value.trim(); d.close(); };
+    $('#rename-save').onclick = save;
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+    d.addEventListener('close', () => resolve(value), { once: true });
+    d.showModal();
+    input.select();
+  });
+  if (!name || name === doc.title) return;
+  doc.title = name;
+  if (doc.transcript) doc.transcript.title = name;
+  await store.putDoc(doc);
+  renderSaved();
 }
 
 /** "Srpski" for sr; a transcript without a language is from the phone or from before 1.9, so Serbian. */
@@ -193,12 +250,12 @@ function langBadge(code) {
 }
 
 async function importFile(file) {
-  if (isAudio(file)) { await transcribeFile(file); return; }
+  if (isAudio(file)) { await transcribeFiles([file]); return; }
   const msg = $('#start-msg');
   showMsg(msg, t('loading'));
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const { envelope, transcript, audio } = await parseBundle(bytes);
+    const { envelope, transcript, audio, audioType } = await parseBundle(bytes);
     if (!transcript.id) transcript.id = envelope.transcriptId;
     const id = String(transcript.id);
     const { loadedFp, baseFp, baseSegs } = await loadFingerprints(envelope, transcript);
@@ -231,7 +288,7 @@ async function importFile(file) {
       hasAudio: !!audio || !!local?.hasAudio,
       savedAt: Date.now(),
     };
-    const blob = audio ? new Blob([audio], { type: 'audio/mp4' }) : null;
+    const blob = audio ? new Blob([audio], { type: audioType }) : null;
     await store.putDocWithAudio(doc, blob);
     store.persist();
     showMsg(msg, '');
@@ -246,11 +303,15 @@ async function importFile(file) {
 // ------------------------------------------------------------------ transcribing in the browser
 
 /** In-browser transcription: ok once support() passed; one run at a time. */
-const ASR = { ok: false, why: '', running: false, stop: false, loading: false, transcriber: null };
+// In-browser transcription runs one recording at a time, in the background: more can wait in [queue], and the
+// editor stays usable meanwhile. [current] is the id being transcribed; [show] opens the progress dialog for the
+// next run (a run the user just started from the start screen); [status] is its latest progress line.
+const ASR = { ok: false, why: '', running: false, stop: false, loading: false, transcriber: null,
+  queue: [], current: null, show: false, status: { text: '', fraction: null } };
 
 const AUDIO_EXT = /\.(m4a|mp3|wav|ogg|oga|opus|aac|flac|amr|3gp|webm|mp4)$/i;
 const isAudio = (f) => (f.type || '').startsWith('audio/') || AUDIO_EXT.test(f.name || '');
-const mb = (bytes) => `${Math.round(bytes / 1e6)} MB`;
+const mb = (bytes) => `${(bytes / 1e6).toFixed(bytes < 1e7 ? 1 : 0)} MB`;
 const asrPercent = (d) => {
   const total = (d.durationMs || 0) * (SAMPLE_RATE / 1000);
   return total ? Math.min(99, Math.floor((100 * (d.asr.done || 0)) / total)) : 0;
@@ -262,17 +323,27 @@ async function setupAsr() {
   ASR.ok = s.ok;
   ASR.why = s.ok ? '' : t(s.reason);
   $('#asr-card').hidden = false;
-  $('#asr-pick').hidden = !s.ok;
+  $('#drop').hidden = !s.ok;
+  $('#set-model').hidden = !s.ok;
   $('#asr-lang-field').hidden = !s.ok;
+  $('#asr-gentle-field').hidden = !s.ok;
+  syncGentle();
   $('#asr-lang').value = ['sr', 'en'].includes(prefs.asrLang) ? prefs.asrLang : 'sr';
   $('#asr-why').hidden = s.ok;
   $('#asr-why').textContent = ASR.why;
   await updateModelLine();
 }
 
+/** The pause mode's two switches (start screen, progress dialog) show the one setting; on unless turned off. */
+function syncGentle() {
+  for (const box of [$('#asr-gentle'), $('#asr-gentle-dlg')]) box.checked = prefs.asrGentle !== false;
+}
+
 async function updateModelLine() {
   const m = await asr.modelState();
-  $('#asr-model').textContent = !ASR.ok ? '' : m.downloaded ? t('asrModelReady', mb(m.bytes)) : t('asrModelMissing', DOWNLOAD_MB);
+  const text = !ASR.ok ? '' : m.downloaded ? t('asrModelReady', mb(m.bytes)) : t('asrModelMissing', DOWNLOAD_MB);
+  $('#asr-model').textContent = text;
+  $('#set-model-text').textContent = text;
   $('#asr-delete-model').hidden = !(m.bytes > 0) || ASR.running;
   return m;
 }
@@ -284,17 +355,28 @@ async function deleteModel() {
   ASR.transcriber = null;
   await asr.deleteModel();
   await updateModelLine();
-  showMsg($('#start-msg'), t('asrModelDeleted'));
+  $('#set-model-text').textContent = `${t('asrModelDeleted')}. ${$('#set-model-text').textContent}`;
 }
 
-/** A new transcript from an audio file: stored with its recording, then transcribed. */
-async function transcribeFile(file) {
+/** New transcripts from audio files: each stored with its recording, then queued for transcription. */
+async function transcribeFiles(files) {
   const msg = $('#start-msg');
-  if (!isAudio(file)) { showMsg(msg, t('asrNotAudio'), true); return; }
+  const audio = files.filter(isAudio);
+  if (!audio.length) { showMsg(msg, t('asrNotAudio'), true); return; }
   if (!ASR.ok) { showMsg(msg, ASR.why || t('asrNoWebgpu'), true); return; }
-  if (ASR.running) { showMsg(msg, t('asrBusy'), true); return; }
-  if (!(await asr.modelState()).downloaded
+  const busy = ASR.current != null || ASR.queue.length > 0;
+  if (!busy && !(await asr.modelState()).downloaded
     && !(await confirmBox(t('asrDownloadTitle'), t('asrDownloadText', DOWNLOAD_MB), t('asrDownload')))) return;
+  const ids = [];
+  for (const file of audio) ids.push(await addRecording(file));
+  store.persist();
+  showMsg(msg, busy || ids.length > 1 ? t('asrQueued', ids.length) : '');
+  // The first run started from the start screen shows its progress; anything added later just waits its turn.
+  enqueue(ids, { show: !busy && !$('#start').hidden });
+}
+
+/** Stores [file] as a new, not yet transcribed transcript in the language chosen now; returns its id. */
+async function addRecording(file) {
   const now = new Date();
   const id = newTranscriptId(now);
   const title = file.name.replace(/\.[^.]+$/, '') || id;
@@ -313,13 +395,101 @@ async function transcribeFile(file) {
   };
   const blob = file.type ? file : new Blob([file], { type: 'audio/mp4' });
   await store.putDocWithAudio(doc, blob);
-  store.persist();
-  showMsg(msg, '');
-  await renderSaved();
-  await runAsr(id);
+  return id;
+}
+
+/** Adds transcripts to the queue (an unfinished one resumes where it stopped) and starts the next if idle. */
+function enqueue(ids, { show = false } = {}) {
+  for (const id of ids) if (id !== ASR.current && !ASR.queue.includes(id)) ASR.queue.push(id);
+  if (show && ASR.current == null) ASR.show = true;
+  updateAsrStatus();
+  renderSaved();
+  pump();
+}
+
+function dequeue(id) {
+  ASR.queue = ASR.queue.filter((q) => q !== id);
+  updateAsrStatus();
+  renderSaved();
+}
+
+async function pump() {
+  if (ASR.current != null || !ASR.queue.length) return;
+  await runAsr(ASR.queue.shift());
+  pump();
+}
+
+// ---------------- transcription diagnostics (open the page with ?diag)
+// Measures what makes the page sluggish during a run: page stalls (frames over 50 ms apart; long main-thread tasks
+// when the browser reports them), the recogniser's time per window, and the save after each window. The summary is
+// printed to the console (and kept in window.asrDiag) when a run ends.
+const DIAG = new URLSearchParams(location.search).has('diag');
+
+function diagStart() {
+  if (!DIAG) return null;
+  const d = { gaps: [], longTasks: [], windows: [], phases: {}, done: false, cores: navigator.hardwareConcurrency };
+  try {
+    d.obs = new PerformanceObserver((list) => { for (const e of list.getEntries()) d.longTasks.push(Math.round(e.duration)); });
+    d.obs.observe({ type: 'longtask' });
+  } catch { /* not every browser reports long tasks */ }
+  let last = performance.now();
+  const tick = (now) => {
+    if (d.done) return;
+    // a hidden tab draws no frames: that is not a stall
+    if (document.visibilityState === 'visible' && now - last > 50) d.gaps.push(Math.round(now - last));
+    last = now;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  return d;
+}
+
+function diagEnd(d) {
+  if (!d) return;
+  d.done = true;
+  d.obs?.disconnect();
+  const stats = (xs) => {
+    if (!xs.length) return { n: 0 };
+    const s = [...xs].sort((a, b) => a - b);
+    const at = (q) => s[Math.min(s.length - 1, Math.floor(q * s.length))];
+    return { n: s.length, total: s.reduce((a, b) => a + b, 0), p50: at(0.5), p95: at(0.95), max: s.at(-1) };
+  };
+  const summary = {
+    cores: d.cores, phases: d.phases,
+    stalls_over_50ms: stats(d.gaps),
+    long_main_thread_tasks: stats(d.longTasks),
+    recogniser_ms_per_window: stats(d.windows.map((w) => w.run)),
+    save_ms_per_window: stats(d.windows.map((w) => w.save)),
+    audio_s_per_window: stats(d.windows.map((w) => w.audio)),
+  };
+  globalThis.asrDiag = { summary, windows: d.windows, gaps: d.gaps, longTasks: d.longTasks };
+  console.log('[asr-diag]', JSON.stringify(summary, null, 2));
+  console.table(d.windows);
+}
+
+/** A message wherever the user is: in the editor's message line, or above the saved list. */
+function notify(text, warn = false) {
+  if (!$('#editor').hidden) flash(text, warn);
+  else showMsg($('#start-msg'), text, warn);
+}
+
+/** The header button, the running card's badge and the tab title follow the current run. */
+function updateAsrStatus() {
+  const pill = $('#asr-pill');
+  const running = ASR.current != null;
+  pill.hidden = !running && !ASR.queue.length;
+  const pct = ASR.status.fraction == null ? null : Math.floor(ASR.status.fraction * 100);
+  const head = pct == null ? t('asrPillBusy') : t('asrPill', pct);
+  pill.textContent = ASR.queue.length ? `${head} · ${t('asrPillQueue', ASR.queue.length)}` : head;
+  const live = document.querySelector(`#saved-list li[data-id="${CSS.escape(ASR.current ?? '')}"] .asr-live`);
+  if (live) live.textContent = pct == null ? ASR.status.text : t('asrRunningPct', pct);
+  $('#asr-queue').textContent = ASR.queue.length ? t('asrQueueLine', ASR.queue.length) : '';
+  document.title = running && pct != null ? `${pct}% · ${t('appName')}` : t('appName');
 }
 
 function setAsrPhase(text, fraction) {
+  ASR.status = { text, fraction };
+  updateAsrStatus();
   $('#asr-phase').textContent = text;
   const bar = $('#asr-bar');
   if (fraction == null) bar.removeAttribute('value');
@@ -328,23 +498,23 @@ function setAsrPhase(text, fraction) {
 
 /** Transcribes (or goes on transcribing) the stored transcript `id`, saving after every window. */
 async function runAsr(id) {
-  const msg = $('#start-msg');
-  if (!ASR.ok) { showMsg(msg, ASR.why || t('asrNoWebgpu'), true); return; }
-  if (ASR.running) { showMsg(msg, t('asrBusy'), true); return; }
+  if (!ASR.ok) { notify(ASR.why || t('asrNoWebgpu'), true); return; }
   const doc = await store.getDoc(id);
   if (!doc?.asr) return;
   ASR.running = true;
+  ASR.current = id;
   ASR.stop = false;
+  ASR.status = { text: '', fraction: null };
   const dlg = $('#dlg-asr');
   // The language chosen when it started: a resume keeps it, whatever the selector says now.
   $('#asr-file-name').textContent = `${doc.title} · ${langName(doc.asr.lang)}`;
-  $('#asr-lang').disabled = true;
   $('#asr-detail').textContent = '';
   $('#asr-last').hidden = true;
   $('#asr-stop').disabled = false;
   $('#asr-delete-model').hidden = true;
-  showMsg(msg, '');
-  dlg.showModal();
+  renderSaved();
+  if (ASR.show) { ASR.show = false; if (!dlg.open) dlg.showModal(); }
+  const diag = diagStart();
   let outcome = 'stopped';
   try {
     const downloading = !(await asr.modelState()).downloaded;
@@ -352,6 +522,7 @@ async function runAsr(id) {
     if (!ASR.transcriber) ASR.transcriber = new asr.Transcriber();
     const files = new Map();
     ASR.loading = true;
+    let tLoad = performance.now();
     await ASR.transcriber.load((p) => {
       if (p.type === 'retry') { $('#asr-detail').textContent = t('asrRetry', p.attempt + 1); return; }
       if (!downloading || !p.total) return;
@@ -363,12 +534,15 @@ async function runAsr(id) {
       setAsrPhase(t('asrDownloading', Math.round(loaded / 1e6), Math.round(total / 1e6)), loaded / total);
     });
     ASR.loading = false;
+    if (diag) diag.phases.load_ms = Math.round(performance.now() - tLoad);
     if (ASR.stop) throw new Error('stopped');
 
     setAsrPhase(t('asrDecoding'), null);
     let pcm;
+    tLoad = performance.now();
     try {
       pcm = await asr.decodeAudio(await store.getAudio(id));
+      if (diag) diag.phases.decode_ms = Math.round(performance.now() - tLoad);
     } catch (e) {
       throw new Error(t('asrBadAudio', e.message || String(e)));
     }
@@ -394,6 +568,7 @@ async function runAsr(id) {
     showProgress(from);
     for (const w of ws) {
       if (ASR.stop) break;
+      const tRun = performance.now();
       if (!isSilent(pcm, w[0], w[1])) {
         const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1]), st.lang || 'sr'), pcm, w);
         st.pieces.push(...placed);
@@ -404,8 +579,20 @@ async function runAsr(id) {
       }
       st.done = w[1];
       doc.savedAt = Date.now();
+      const tSave = performance.now();
       await store.putDoc(doc);
+      if (diag) {
+        diag.windows.push({ audio: Math.round((w[1] - w[0]) / SAMPLE_RATE), run: Math.round(tSave - tRun), save: Math.round(performance.now() - tSave),
+          pieces: st.pieces.length, kb: Math.round(JSON.stringify(st.pieces).length / 1024) });
+      }
       showProgress(w[1]);
+      // Edge and Chrome draw every tab through the GPU process the recogniser keeps busy, so they freeze while it runs
+      // (26 Nov 2026; Firefox on Linux has no WebGPU). A pause after each window lets the browser catch up.
+      if (prefs.asrGentle !== false && w !== ws.at(-1)) {
+        const pause = Math.min(8000, Math.max(500, 0.3 * (performance.now() - tRun)));
+        for (const until = performance.now() + pause; performance.now() < until && !ASR.stop;) await new Promise((r) => setTimeout(r, 100));
+        if (diag) diag.windows.at(-1).pause = Math.round(pause);
+      }
     }
     if (!ASR.stop) {
       const segs = mergeSentences(st.pieces);
@@ -422,26 +609,39 @@ async function runAsr(id) {
     if (!ASR.stop) {
       outcome = 'failed';
       const text = /^network/.test(e.message || '') ? t('asrNetwork') : t('asrFailed', e.message || String(e));
-      showMsg(msg, text, true);
+      notify(`${doc.title}: ${text}`, true);
       ASR.transcriber?.terminate();
       ASR.transcriber = null;
     }
   } finally {
     ASR.running = false;
     ASR.loading = false;
-    $('#asr-lang').disabled = false;
-    dlg.close();
+    ASR.current = null;
+    ASR.status = { text: '', fraction: null };
+    diagEnd(diag);
+    // Still watching: with more waiting the dialog stays open for the next one; with none left, the result opens
+    // (unless the user is in the middle of another transcript).
+    const keepOpen = dlg.open && ASR.queue.length > 0 && !ASR.stop;
+    const watching = dlg.open && !ASR.queue.length && $('#editor').hidden;
+    if (keepOpen) ASR.show = true; else dlg.close();
+    updateAsrStatus();
     await updateModelLine();
-  }
-  if (outcome === 'done' || outcome === 'empty') {
-    await openDoc(id);
-    flash(outcome === 'done' ? t('asrDone', S.segs.length) : t('asrEmpty'), outcome === 'empty');
-  } else {
-    await renderSaved();
+    if (outcome === 'done' || outcome === 'empty') {
+      if (watching) {
+        await openDoc(id);
+        flash(outcome === 'done' ? t('asrDone', S.segs.length) : t('asrEmpty'), outcome === 'empty');
+      } else {
+        const n = doc.transcript.segments.length;
+        notify(outcome === 'done' ? t('asrDoneOf', doc.title, n) : `${doc.title}: ${t('asrEmpty')}`, outcome === 'empty');
+      }
+    }
+    if ($('#editor').hidden) await renderSaved();
   }
 }
 
+/** "Zaustavi": ends the current run after its window and empties the queue; all stay resumable from the list. */
 function stopAsr() {
+  ASR.queue = [];
   ASR.stop = true;
   $('#asr-stop').disabled = true;
   setAsrPhase(t('asrStopping'), null);
@@ -457,7 +657,12 @@ function stopAsr() {
 async function openDoc(id) {
   const doc = await store.getDoc(id);
   if (!doc) return;
-  if (doc.asr) { await runAsr(id); return; } // not transcribed to the end yet
+  if (doc.asr) { // not transcribed to the end yet
+    if (ASR.current === id) $('#dlg-asr').showModal();
+    else if (ASR.queue.includes(id)) notify(t('asrInQueue', doc.title));
+    else enqueue([id], { show: true });
+    return;
+  }
   S.doc = doc;
   S.hasEdited = doc.transcript.editedSegments != null;
   S.pendingEdit = false;
@@ -1014,24 +1219,79 @@ async function restoreVersion(n) {
 
 // ---------------- toolbar actions
 
-function savePhoneBundle() {
-  if (S.doc.transcript.origin === 'web') {
-    choose(t('saveForPhone'), t('phoneNoWebBorn'), [{ label: t('ok'), value: true, cls: 'primary' }]);
-    return;
-  }
+/** The transcript as a bundle (docs/bundle-format.md), with its recording, for the phone or another browser. */
+async function savePhoneBundle() {
   commitEdit();  // the bundle's transcript.json carries the history, with this session's typing in it
-  const tr = S.doc.transcript;
   const editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
-  const { bytes, fileName } = buildBundle({ transcript: tr, editedSegments, baseFingerprint: S.doc.baseFp, baseSegments: S.doc.baseSegs ?? null });
-  downloadBlob(new Blob([bytes], { type: 'application/zip' }), fileName);
-  flash(t('savedBundle', fileName));
+  const done = await exportDoc(S.doc, editedSegments);
+  if (!done) return;
+  flash(done);
   saveNow();
+}
+
+/**
+ * Downloads [doc] as a bundle (docs/bundle-format.md), asking first whether to include the recording when there is
+ * one. Returns the message to show, or null when cancelled. Used by the editor and by the saved list.
+ */
+async function exportDoc(doc, editedSegments) {
+  const tr = doc.transcript;
+  let blob = doc.hasAudio ? await store.getAudio(doc.id) : null;
+  if (blob) {
+    // The second sync of a transcript the other side already has needs only the text: much smaller. A transcript
+    // that came from the phone has its recording there, so that is the suggested choice for it.
+    const fromPhone = tr.origin !== 'web';
+    const pick = await choose(t('exportTitle'), t('exportText', mb(blob.size)), [
+      { label: t('cancel'), value: null, cls: 'ghost' },
+      { label: t('exportNoAudio'), value: 'text', cls: fromPhone ? 'primary' : '' },
+      { label: t('exportWithAudio', mb(blob.size)), value: 'audio', cls: fromPhone ? '' : 'primary' },
+    ]);
+    if (pick === null) return null;
+    if (pick === 'text') blob = null;
+  }
+  const audio = blob ? { name: audioEntry(blob.type, tr.sourceFile), data: new Uint8Array(await blob.arrayBuffer()) } : null;
+  const { bytes, fileName } = buildBundle({ transcript: tr, editedSegments, baseFingerprint: doc.baseFp, baseSegments: doc.baseSegs ?? null, audio });
+  downloadBlob(new Blob([bytes], { type: 'application/zip' }), fileName);
+  return t(audio ? 'savedBundle' : 'savedBundleNoAudio', fileName);
+}
+
+/** "Sačuvaj kao…": a disclosure menu of the text formats. Escape or a click elsewhere closes it; arrows move. */
+function wireSaveAs() {
+  const btn = $('#save-as');
+  const menu = $('#save-as-menu');
+  const items = [...menu.querySelectorAll('[data-export]')];
+  const close = (focus = false) => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    if (focus) btn.focus();
+  };
+  btn.addEventListener('click', () => {
+    const open = menu.hidden;
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    if (open) items[0].focus();
+  });
+  for (const b of items) b.addEventListener('click', () => { close(true); exportAs(b.dataset.export); });
+  menu.addEventListener('keydown', (e) => {
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+  });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.menu-wrap')) close(); });
+  menu.addEventListener('focusout', (e) => { if (!e.relatedTarget?.closest?.('.menu-wrap')) close(); });
 }
 
 function exportAs(kind) {
   const segs = displayedSegs();
   const base = baseName(S.doc.title);
-  if (kind === 'txt') downloadText(toTxt(segs, { header: [S.doc.title, callLine(S.doc.transcript)].filter(Boolean).join(' · '), tags: tagsOf() }), `${base}.txt`);
+  if (kind === 'docx') {
+    // Plain paragraphs for reading and editing in Word: no times, no tag marks; the script as shown.
+    const tr = S.doc.transcript;
+    const subtitle = callLine(tr) || [tr.createdAt ? new Date(tr.createdAt).toLocaleString('sr-Latn') : '', S.doc.durationMs ? clock(S.doc.durationMs) : ''].filter(Boolean).join(' · ');
+    const bytes = toDocx({ title: S.doc.title, subtitle, paragraphs: segs.map((s) => s.text), lang: docxLang(docLang(), prefs.latin) });
+    downloadBlob(new Blob([bytes], { type: DOCX_TYPE }), `${base}.docx`);
+  } else if (kind === 'txt') downloadText(toTxt(segs, { header: [S.doc.title, callLine(S.doc.transcript)].filter(Boolean).join(' · '), tags: tagsOf() }), `${base}.txt`);
   else if (kind === 'srt') downloadText(toSrt(segs), `${base}.srt`, 'application/x-subrip');
   else downloadText(toVtt(segs), `${base}.vtt`, 'text/vtt');
 }
@@ -1164,6 +1424,7 @@ function openSettings() {
   $('#gem-model').disabled = !g;
   $('#gem-clear').hidden = !g;
   showMsg($('#gem-msg'), '');
+  if (ASR.ok) updateModelLine();
   $('#dlg-settings').showModal();
   // The key's models can change (new ones, a different tier): refresh the list quietly, keeping the choice.
   if (g) {
@@ -1397,28 +1658,46 @@ function wire() {
   for (const d of document.querySelectorAll('dialog:not(#dlg-asr)')) closeOnBackdrop(d);
   $('#dlg-asr').addEventListener('cancel', (e) => e.preventDefault());
   $('#asr-stop').addEventListener('click', stopAsr);
-  $('#asr-file').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) transcribeFile(f); e.target.value = ''; });
+  $('#asr-file').addEventListener('change', (e) => { const fs = [...e.target.files]; if (fs.length) transcribeFiles(fs); e.target.value = ''; });
+  $('#asr-bg').addEventListener('click', () => $('#dlg-asr').close());
+  $('#asr-pill').addEventListener('click', () => { if (ASR.current != null) $('#dlg-asr').showModal(); else showStart(); });
+  // Closing the tab ends a run; what is done is kept, but warn first.
+  window.addEventListener('beforeunload', (e) => { if (ASR.current != null || ASR.queue.length) { e.preventDefault(); e.returnValue = ''; } });
   $('#asr-delete-model').addEventListener('click', deleteModel);
   $('#asr-lang').addEventListener('change', (e) => { prefs.asrLang = e.target.value; savePrefs(); });
+  for (const box of [$('#asr-gentle'), $('#asr-gentle-dlg')]) {
+    box.addEventListener('change', () => { prefs.asrGentle = box.checked; savePrefs(); syncGentle(); });
+  }
 
-  const drop = $('#drop');
+  $('#asr-pick').addEventListener('click', () => $('#asr-file').click());
   const file = $('#file');
+  $('#pick-bundle').addEventListener('click', () => file.click());
   file.addEventListener('change', () => { if (file.files[0]) importFile(file.files[0]); file.value = ''; });
-  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); file.click(); } });
-  for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
-  for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.classList.remove('over'));
-  drop.addEventListener('drop', (e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) importFile(f); });
-  // A file dropped anywhere else must not navigate away from the editor.
-  window.addEventListener('dragover', (e) => e.preventDefault());
+  // A file dropped anywhere on the start screen is taken: audio is transcribed, a .zip opens as a phone package
+  // (importFile tells them apart). In the editor a drop must not navigate away, so it is only swallowed.
+  const drop = $('#drop');
+  let dragEnd = 0;
+  window.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if ($('#start').hidden) return;
+    drop.classList.add('over');
+    clearTimeout(dragEnd); // dragover repeats while a file is over the page; its absence means the drag left
+    dragEnd = setTimeout(() => drop.classList.remove('over'), 200);
+  });
   window.addEventListener('drop', (e) => {
     e.preventDefault();
-    const f = e.dataTransfer?.files?.[0];
-    if (f && !$('#start').hidden) importFile(f);
+    drop.classList.remove('over');
+    if ($('#start').hidden) return;
+    // Several recordings go into the queue together; otherwise the one file is opened as before.
+    const files = [...(e.dataTransfer?.files ?? [])];
+    const audio = files.filter(isAudio);
+    if (audio.length > 1) transcribeFiles(audio);
+    else if (files[0]) importFile(audio[0] ?? files[0]);
   });
 
   $('#back').addEventListener('click', showStart);
   $('#save-phone').addEventListener('click', savePhoneBundle);
-  for (const b of document.querySelectorAll('[data-export]')) b.addEventListener('click', () => exportAs(b.dataset.export));
+  wireSaveAs();
   $('#revert').addEventListener('click', revert);
   $('#history').addEventListener('click', openHistory);
   $('#save-version').addEventListener('click', saveVersion);

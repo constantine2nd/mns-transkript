@@ -27,6 +27,7 @@
         <span class="privacy" data-i18n="privacy"></span>
         <span class="version" id="app-version"></span>
       </div>
+      <button id="asr-pill" class="btn small asr-pill" type="button" data-i18n-title="asrPillHint" hidden></button>
       <button id="install" class="btn primary install" type="button" data-i18n="install" hidden></button>
       <button id="theme" class="btn ghost theme" type="button"><span class="theme-icon" aria-hidden="true"></span> <span class="theme-label"></span></button>
       <button id="settings" class="btn ghost settings" type="button" data-i18n="settings"></button>
@@ -35,33 +36,32 @@
 
   <main id="start" class="view">
     <h1 class="sr-only" data-i18n="appName"></h1>
-    <label id="drop" class="drop" tabindex="0">
-      <input id="file" type="file" accept=".zip,application/zip" hidden>
-      <span class="drop-title" data-i18n="dropTitle"></span>
-      <span class="drop-hint" data-i18n="dropHint"></span>
-      <span class="btn primary" data-i18n="pickFile"></span>
-    </label>
     <p id="start-msg" class="msg" role="status" hidden></p>
     <section id="asr-card" class="asr-card" hidden>
-      <div class="asr-text">
-        <h2 data-i18n="asrTitle"></h2>
-        <p class="muted" data-i18n="asrHint"></p>
-        <p id="asr-model" class="muted small"></p>
-        <label id="asr-lang-field" class="field inline-field" hidden><span data-i18n="asrLang"></span>
-          <select id="asr-lang">
-            <option value="sr" data-i18n="asrLangSr"></option>
-            <option value="en" data-i18n="asrLangEn"></option>
-          </select>
-        </label>
-        <p id="asr-why" class="asr-why" hidden></p>
+      <h2 data-i18n="asrTitle"></h2>
+      <p class="muted" data-i18n="asrHint"></p>
+      <label id="asr-lang-field" class="field inline-field" hidden><span data-i18n="asrLang"></span>
+        <select id="asr-lang">
+          <option value="sr" data-i18n="asrLangSr"></option>
+          <option value="en" data-i18n="asrLangEn"></option>
+        </select>
+      </label>
+      <label id="asr-gentle-field" class="inline-check" data-i18n-title="asrGentleHint" hidden><input id="asr-gentle" type="checkbox"> <span data-i18n="asrGentle"></span></label>
+      <!-- Audio or a phone package dropped anywhere on this screen is taken; this area is where the eye goes. -->
+      <div id="drop" class="drop" hidden>
+        <span class="drop-hint" data-i18n="asrDropHint"></span>
+        <button id="asr-pick" class="btn primary" type="button" data-i18n="asrPick"></button>
+        <input id="asr-file" type="file" multiple accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.aac,.flac,.amr,.3gp" hidden>
       </div>
-      <div class="asr-actions">
-        <label id="asr-pick" class="btn primary" hidden><input id="asr-file" type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.aac,.flac,.amr,.3gp" hidden><span data-i18n="asrPick"></span></label>
-        <button id="asr-delete-model" class="btn ghost small" type="button" data-i18n="asrDeleteModel" hidden></button>
-      </div>
+      <p id="asr-model" class="muted small"></p>
+      <p id="asr-why" class="asr-why" hidden></p>
     </section>
     <section class="saved">
-      <h2 data-i18n="savedTitle"></h2>
+      <div class="saved-head">
+        <h2 data-i18n="savedTitle"></h2>
+        <button id="pick-bundle" class="btn" type="button" data-i18n="openBundle" data-i18n-title="openBundleHint"></button>
+        <input id="file" type="file" accept=".zip,application/zip" hidden>
+      </div>
       <ul id="saved-list" class="saved-list"></ul>
       <p id="saved-empty" class="muted" data-i18n="savedEmpty" hidden></p>
     </section>
@@ -81,12 +81,15 @@
     </div>
 
     <div class="toolbar">
-      <button id="save-phone" class="btn primary" type="button" data-i18n="saveForPhone"></button>
-      <span class="group">
-        <span class="muted" data-i18n="exportLabel"></span>
-        <button class="btn" type="button" data-export="txt" data-i18n="exportTxt"></button>
-        <button class="btn" type="button" data-export="srt" data-i18n="exportSrt"></button>
-        <button class="btn" type="button" data-export="vtt" data-i18n="exportVtt"></button>
+      <button id="save-phone" class="btn primary" type="button" data-i18n="saveForPhone" data-i18n-title="saveForPhoneHint"></button>
+      <span class="menu-wrap">
+        <button id="save-as" class="btn" type="button" aria-expanded="false" aria-controls="save-as-menu"><span data-i18n="saveAs"></span> <span aria-hidden="true">▾</span></button>
+        <span id="save-as-menu" class="menu" hidden>
+          <button class="menu-item" type="button" data-export="docx" data-i18n="exportDocx"></button>
+          <button class="menu-item" type="button" data-export="txt" data-i18n="exportTxt"></button>
+          <button class="menu-item" type="button" data-export="srt" data-i18n="exportSrt"></button>
+          <button class="menu-item" type="button" data-export="vtt" data-i18n="exportVtt"></button>
+        </span>
       </span>
       <button id="ai-request" class="btn" type="button" data-i18n="aiRequest"></button>
       <button id="ai-import" class="btn" type="button" data-i18n="aiImport"></button>
@@ -128,6 +131,17 @@
     <div class="dlg-actions" id="confirm-actions"></div>
   </dialog>
 
+  <dialog id="dlg-rename" class="dlg" aria-labelledby="rename-title">
+    <h2 id="rename-title" data-i18n="renameTitle"></h2>
+    <label class="field"><span data-i18n="renameLabel"></span>
+      <input id="rename-input" type="text" maxlength="200" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="dlg-actions">
+      <button class="btn ghost" type="button" data-close data-i18n="cancel"></button>
+      <button id="rename-save" class="btn primary" type="button" data-i18n="save"></button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-asr" class="dlg wide" aria-labelledby="asr-dlg-title">
     <h2 id="asr-dlg-title" data-i18n="asrRunning"></h2>
     <p id="asr-file-name" class="muted"></p>
@@ -135,8 +149,13 @@
     <progress id="asr-bar" class="asr-bar" max="1" value="0"></progress>
     <p id="asr-detail" class="muted small"></p>
     <p id="asr-last" class="asr-last" hidden></p>
+    <p id="asr-queue" class="muted small"></p>
+    <label class="inline-check" data-i18n-title="asrGentleHint"><input id="asr-gentle-dlg" type="checkbox"> <span data-i18n="asrGentle"></span></label>
     <p class="muted small" data-i18n="asrStopHint"></p>
-    <div class="dlg-actions"><button id="asr-stop" class="btn" type="button" data-i18n="asrStop"></button></div>
+    <div class="dlg-actions">
+      <button id="asr-stop" class="btn ghost" type="button" data-i18n="asrStop"></button>
+      <button id="asr-bg" class="btn primary" type="button" data-i18n="asrBackground"></button>
+    </div>
   </dialog>
 
   <dialog id="dlg-settings" aria-labelledby="settings-title" class="dlg">
@@ -149,6 +168,11 @@
         <option value="dark" data-i18n="themeDark"></option>
       </select>
     </label>
+    <section id="set-model" hidden>
+      <h3 data-i18n="asrModelTitle"></h3>
+      <p id="set-model-text" class="muted"></p>
+      <button id="asr-delete-model" class="btn ghost small" type="button" data-i18n="asrDeleteModel" hidden></button>
+    </section>
     <h3 data-i18n="gemTitle"></h3>
     <p class="muted" data-i18n="gemText"></p>
     <label class="field"><span data-i18n="gemKey"></span>
