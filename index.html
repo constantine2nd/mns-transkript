@@ -95,6 +95,7 @@
       <button id="ai-import" class="btn" type="button" data-i18n="aiImport"></button>
       <button id="save-version" class="btn" type="button" data-i18n="saveVersion" data-i18n-title="saveVersionHint"></button>
       <button id="history" class="btn" type="button" data-i18n="history"></button>
+      <button id="speakers" class="btn" type="button" data-i18n="speakersPanel"></button>
       <button id="revert" class="btn ghost" type="button" data-i18n="revert"></button>
     </div>
 
@@ -123,6 +124,7 @@
     <p id="ed-msg" class="msg" role="status" hidden></p>
 
     <ol id="lines" class="lines"></ol>
+    <div id="spk-menu" class="menu spk-menu" hidden></div>
   </main>
 
   <dialog id="dlg-confirm" class="dlg" aria-labelledby="confirm-title" aria-describedby="confirm-text">
@@ -197,9 +199,37 @@
       <tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td data-i18n="helpReplay"></td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td data-i18n="helpSplit"></td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Backspace</kbd></td><td data-i18n="helpJoin"></td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd> · <kbd>0</kbd></td><td data-i18n="helpSpeaker"></td></tr>
       <tr><td>00:00</td><td data-i18n="helpClickTime"></td></tr>
     </table>
     <div class="dlg-actions"><button class="btn" type="button" data-close data-i18n="close"></button></div>
+  </dialog>
+
+  <dialog id="dlg-export" aria-labelledby="export-title" class="dlg">
+    <h2 id="export-title"></h2>
+    <p class="muted" data-i18n="exportColsText"></p>
+    <fieldset class="cols">
+      <legend class="sr-only" data-i18n="exportColsText"></legend>
+      <label class="inline-check"><input id="ex-time" type="checkbox"> <span data-i18n="colTime"></span> <span id="ex-time-note" class="muted small" data-i18n="exportTimeAlways" hidden></span></label>
+      <label id="ex-speaker-field" class="inline-check"><input id="ex-speaker" type="checkbox"> <span data-i18n="colSpeaker"></span></label>
+      <label class="inline-check"><input type="checkbox" checked disabled> <span data-i18n="colText"></span></label>
+    </fieldset>
+    <div class="dlg-actions">
+      <button class="btn ghost" type="button" data-close data-i18n="cancel"></button>
+      <button id="ex-go" class="btn primary" type="button" data-i18n="exportSave"></button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-speakers" aria-labelledby="speakers-title" class="dlg">
+    <h2 id="speakers-title" data-i18n="speakersPanel"></h2>
+    <p class="muted" data-i18n="speakersText"></p>
+    <ul id="spk-list" class="spk-list"></ul>
+    <p id="spk-empty" class="muted" data-i18n="speakersEmpty" hidden></p>
+    <div class="dlg-actions">
+      <button id="spk-add" class="btn" type="button" data-i18n="speakerNew"></button>
+      <span class="spacer"></span>
+      <button class="btn primary" type="button" data-close data-i18n="close"></button>
+    </div>
   </dialog>
 
   <dialog id="dlg-history" aria-labelledby="history-title" class="dlg wide">

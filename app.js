@@ -2,6 +2,8 @@
 
 import { t } from './i18n.js';
 import { toDocx, docxLang, DOCX_TYPE } from './docx.js';
+import * as spk from './speakers.js';
+import { lineCopy } from './speakers.js';
 import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle, audioEntry } from './bundle.js';
 import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers } from './text.js';
 import * as ai from './ai.js';
@@ -272,6 +274,8 @@ async function importFile(file) {
     }
     // Taking the incoming text over a local copy: keep the versions made here too (history rule 3).
     if (local) transcript.history = hist.merge(local.transcript?.history, transcript.history);
+    // The fingerprint covers only times and text: without this, taking a copy with the same text dropped our speakers.
+    if (local) spk.mergeIncoming(local.transcript, transcript);
     // The text taken is the phone's: when the history does not end with it (a merged laptop version, or phone edits
     // made before versions existed), record it as a "Sa telefona" version, so it is not later saved as a laptop edit.
     transcript.history = hist.record(transcript, { source: 'phone', device: 'web', segments: transcript.editedSegments ?? null, now: Date.now() });
@@ -666,7 +670,7 @@ async function openDoc(id) {
   S.doc = doc;
   S.hasEdited = doc.transcript.editedSegments != null;
   S.pendingEdit = false;
-  S.segs = effective(doc.transcript).map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  S.segs = effective(doc.transcript).map(lineCopy);
   S.current = -1;
   S.focused = -1;
   $('#start').hidden = true;
@@ -752,6 +756,7 @@ function renderLines(focusIndex = -1, caret = -1, anchor = focusIndex) {
   ol.replaceChildren();
   const tags = tagsOf();
   for (let i = 0; i < S.segs.length; i++) ol.append(lineRow(i, tags));
+  updateChips(); // before measuring: the speaker column's width changes the text boxes' width
   growAll();
   markChanged();
   highlight(S.current, false);
@@ -778,6 +783,9 @@ function lineRow(i, tags) {
   time.title = t('playLine');
   time.setAttribute('aria-label', t('playFrom', clock(s.start)));
   time.addEventListener('click', () => playFrom(i));
+  const who = el('button', 'lspk');
+  who.type = 'button';
+  who.addEventListener('click', () => openSpeakerMenu(Number(li.dataset.i), who));
   const marks = el('span', 'tags');
   for (const g of tags.filter((g) => tagCovers(g, s))) {
     const m = el('span', g.kind === 'IMPORTANT' ? 'tag important' : 'tag', g.kind === 'IMPORTANT' ? '★' : '•');
@@ -803,7 +811,7 @@ function lineRow(i, tags) {
   join.setAttribute('aria-label', t('joinNext'));
   join.hidden = i === S.segs.length - 1;
   join.addEventListener('click', () => joinAt(i));
-  li.append(time, marks, ta, join);
+  li.append(time, who, marks, ta, join);
   return li;
 }
 
@@ -903,11 +911,158 @@ function joinAt(i) {
 
 function onLineKey(e, i, ta) {
   const mod = e.ctrlKey || e.metaKey;
+  // Ctrl+Alt+1…9: this line's speaker (a new one is added when there are fewer); Ctrl+Alt+0 clears it. Not Alt+1…9:
+  // Chrome and Edge on Linux switch tabs with it before the page sees it (26 Nov 2026). AltGr (Ctrl+Alt on Windows)
+  // types characters on the Serbian keyboard, so it is left alone.
+  if (e.altKey && e.ctrlKey && !e.getModifierState('AltGraph') && /^Digit[0-9]$/.test(e.code)) {
+    e.preventDefault();
+    const n = Number(e.code.slice(5));
+    setSpeaker(i, n === 0 ? null : spk.nthSpeaker(S.doc.transcript, n, { names: callNames() }));
+    return;
+  }
   if (mod && e.key === 'Enter') { e.preventDefault(); splitAt(i, ta); return; }
   if (mod && e.key === 'Backspace' && ta.selectionStart === 0 && ta.selectionEnd === 0 && i > 0) {
     e.preventDefault();
     joinAt(i - 1);
   }
+}
+
+// ---------------- speakers (who is talking; speakers.js holds the rules)
+
+/** For a call, the first two speakers are offered as its two sides: "Ja" and the contact. */
+function callNames() {
+  const c = S.doc?.transcript?.call;
+  if (!c || typeof c !== 'object') return [];
+  return [t('speakerMe'), String(c.name || c.number || '').trim() || null];
+}
+
+const speakerLabel = (id) => spk.labelOf(S.doc.transcript, id, (n) => t('speakerN', n));
+
+function setSpeaker(i, id) {
+  if (i < 0 || !spk.setLineSpeaker(S.segs, i, id)) return;
+  edited();
+  updateChips();
+}
+
+/**
+ * Every line's chip: the name at the start of a run of lines by one speaker, a coloured bar on the lines that follow
+ * (the user's choice: the name once per run), a faint "+" on unmarked lines, shown on hover when nobody is marked yet.
+ */
+function updateChips() {
+  if (!S.doc) return;
+  const tr = S.doc.transcript;
+  const any = spk.speakerList(tr).length > 0;
+  const ol = $('#lines');
+  const widen = any !== ol.classList.contains('has-speakers');
+  ol.classList.toggle('has-speakers', any);
+  // The first speaker widens the column and narrows the text: the boxes need their heights again (26 Nov 2026:
+  // on a phone-width screen a two-line text showed one line).
+  if (widen) requestAnimationFrame(growAll);
+  for (let i = 0; i < S.segs.length; i++) {
+    const chip = rowOf(i)?.querySelector('.lspk');
+    if (!chip) continue;
+    const id = S.segs[i].speaker;
+    const label = id ? speakerLabel(id) : '';
+    const cont = !!id && i > 0 && S.segs[i - 1].speaker === id;
+    chip.className = `lspk${id ? ` c${spk.colourOf(tr, id)}` : ' none'}${cont ? ' cont' : ''}`;
+    chip.textContent = id ? (cont ? '' : label) : '+';
+    chip.setAttribute('aria-label', id ? t('speakerOf', label) : t('speakerSet'));
+    chip.title = id ? t('speakerOf', label) : t('speakerSet');
+    chip.setAttribute('aria-haspopup', 'menu');
+  }
+}
+
+/** The small menu under a line's chip: the speakers, a new one, none, and the panel. Keyboard like "Sačuvaj kao…". */
+function openSpeakerMenu(i, chip) {
+  const menu = $('#spk-menu');
+  const tr = S.doc.transcript;
+  const items = [];
+  const item = (text, action, cls = '') => {
+    const b = el('button', `menu-item ${cls}`, text);
+    b.type = 'button';
+    b.addEventListener('click', () => { closeSpeakerMenu(true); action(); });
+    items.push(b);
+  };
+  spk.speakerList(tr).forEach((p, k) => {
+    item(`${k < 9 ? `${k + 1}  ` : ''}${speakerLabel(p.id)}`, () => setSpeaker(i, p.id), `sw c${k % 6}${S.segs[i].speaker === p.id ? ' on' : ''}`);
+  });
+  item(t('speakerNew'), () => setSpeaker(i, spk.addSpeaker(tr, { names: callNames() })));
+  if (S.segs[i].speaker) item(t('speakerNone'), () => setSpeaker(i, null));
+  item(t('speakersPanel'), openSpeakers);
+  menu.replaceChildren(...items);
+  const r = chip.getBoundingClientRect();
+  menu.style.left = `${r.left + scrollX}px`;
+  menu.style.top = `${r.bottom + scrollY + 4}px`;
+  menu.hidden = false;
+  S.menuChip = chip;
+  chip.setAttribute('aria-expanded', 'true');
+  items[0].focus();
+}
+
+function closeSpeakerMenu(focusChip = false) {
+  const menu = $('#spk-menu');
+  if (menu.hidden) return;
+  menu.hidden = true;
+  S.menuChip?.setAttribute('aria-expanded', 'false');
+  if (focusChip) S.menuChip?.focus();
+}
+
+/** "Govornici": rename once for all lines, merge two into one, remove, add. */
+function openSpeakers() {
+  renderSpeakers();
+  $('#dlg-speakers').showModal();
+}
+
+function renderSpeakers() {
+  const tr = S.doc.transcript;
+  const list = spk.speakerList(tr);
+  const n = spk.counts(S.segs);
+  const ul = $('#spk-list');
+  ul.replaceChildren();
+  $('#spk-empty').hidden = list.length > 0;
+  list.forEach((p, k) => {
+    const li = el('li', 'spk-row');
+    const sw = el('span', `swatch c${k % 6}`);
+    sw.setAttribute('aria-hidden', 'true');
+    const name = el('input', 'spk-name');
+    name.type = 'text';
+    name.value = p.name ?? '';
+    name.placeholder = t('speakerN', k + 1);
+    name.setAttribute('aria-label', t('speakerNameOf', k + 1));
+    name.addEventListener('change', async () => {
+      if (spk.renameSpeaker(tr, p.id, name.value)) { updateChips(); await saveNow(); }
+    });
+    const count = el('span', 'muted small', t('speakerLines', n[p.id] || 0));
+    const merge = el('select', 'spk-merge');
+    merge.setAttribute('aria-label', t('speakerMergeOf', speakerLabel(p.id)));
+    merge.append(el('option', '', t('speakerMerge')));
+    merge.options[0].value = '';
+    for (const q of list) if (q.id !== p.id) { const o = el('option', '', speakerLabel(q.id)); o.value = q.id; merge.append(o); }
+    merge.disabled = list.length < 2;
+    merge.addEventListener('change', async () => {
+      const into = merge.value;
+      if (!into) return;
+      if (await confirmBox(t('speakerMerge'), t('speakerMergeText', speakerLabel(p.id), speakerLabel(into)), t('speakerMergeOk'))) {
+        spk.mergeSpeaker(tr, S.segs, p.id, into);
+        edited();
+        updateChips();
+      }
+      renderSpeakers();
+    });
+    const del = el('button', 'btn ghost small', t('speakerRemove'));
+    del.type = 'button';
+    del.setAttribute('aria-label', t('speakerRemoveOf', speakerLabel(p.id)));
+    del.addEventListener('click', async () => {
+      if (await confirmBox(t('speakerRemove'), t('speakerRemoveText', speakerLabel(p.id), n[p.id] || 0), t('speakerRemove'))) {
+        spk.removeSpeaker(tr, S.segs, p.id);
+        edited();
+        updateChips();
+        renderSpeakers();
+      }
+    });
+    li.append(sw, name, count, merge, del);
+    ul.append(li);
+  });
 }
 
 // ---------------- playback
@@ -1059,7 +1214,7 @@ async function saveNow() {
   S.saveTimer = 0;
   if (!S.doc) return;
   const doc = S.doc;
-  doc.transcript.editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
+  doc.transcript.editedSegments = S.hasEdited ? S.segs.map(lineCopy) : null;
   doc.currentFp = await fingerprint(effective(doc.transcript));
   doc.savedAt = Date.now();
   try {
@@ -1077,7 +1232,7 @@ async function flushSave() {
 
 // ---------------- version history
 
-const segsCopy = () => S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+const segsCopy = () => S.segs.map(lineCopy);
 
 /** Records a version of the text as it is now (null = the machine text). */
 function recordVersion(source, segments, from) {
@@ -1210,7 +1365,7 @@ async function restoreVersion(n) {
   const target = hist.restoreTarget(S.doc.transcript, n);
   if (target === undefined) return;
   S.hasEdited = target !== null;
-  S.segs = (target ?? S.doc.transcript.segments).map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  S.segs = (target ?? S.doc.transcript.segments).map(lineCopy);
   recordVersion('restore', target, n);
   renderLines();
   await saveNow();
@@ -1222,7 +1377,7 @@ async function restoreVersion(n) {
 /** The transcript as a bundle (docs/bundle-format.md), with its recording, for the phone or another browser. */
 async function savePhoneBundle() {
   commitEdit();  // the bundle's transcript.json carries the history, with this session's typing in it
-  const editedSegments = S.hasEdited ? S.segs.map((s) => ({ start: s.start, end: s.end, text: s.text })) : null;
+  const editedSegments = S.hasEdited ? S.segs.map(lineCopy) : null;
   const done = await exportDoc(S.doc, editedSegments);
   if (!done) return;
   flash(done);
@@ -1282,25 +1437,66 @@ function wireSaveAs() {
   menu.addEventListener('focusout', (e) => { if (!e.relatedTarget?.closest?.('.menu-wrap')) close(); });
 }
 
+/**
+ * "Sačuvaj kao…" → this format: first the columns to include (time, speaker; the text always), remembered per format.
+ * Subtitles always carry times, so there only the speaker is a choice; without speakers nothing is asked for them.
+ */
+const EXPORT_DEFAULTS = { docx: { time: false, speaker: true }, txt: { time: true, speaker: true }, srt: { time: true, speaker: true }, vtt: { time: true, speaker: true } };
+
 function exportAs(kind) {
+  const cols = { ...EXPORT_DEFAULTS[kind], ...(prefs.exportCols?.[kind] ?? {}) };
+  const hasSpeakers = spk.speakerList(S.doc.transcript).length > 0;
+  const subtitles = kind === 'srt' || kind === 'vtt';
+  const d = $('#dlg-export');
+  $('#export-title').textContent = t('exportTitleOf', { docx: 'Word (.docx)', txt: t('exportTxt'), srt: t('exportSrt'), vtt: t('exportVtt') }[kind]);
+  const time = $('#ex-time');
+  const who = $('#ex-speaker');
+  time.checked = subtitles || cols.time;
+  time.disabled = subtitles;
+  $('#ex-time-note').hidden = !subtitles;
+  who.checked = hasSpeakers && cols.speaker;
+  $('#ex-speaker-field').hidden = !hasSpeakers;
+  $('#ex-go').onclick = () => {
+    prefs.exportCols = { ...(prefs.exportCols ?? {}), [kind]: { time: time.checked, speaker: who.checked } };
+    savePrefs();
+    d.close();
+    writeExport(kind, { time: time.checked, speaker: hasSpeakers && who.checked });
+  };
+  d.showModal();
+  $('#ex-go').focus();
+}
+
+function writeExport(kind, cols) {
   const segs = displayedSegs();
   const base = baseName(S.doc.title);
+  const tr = S.doc.transcript;
+  const nameOf = (s) => (cols.speaker && s.speaker ? speakerLabel(s.speaker) : '');
   if (kind === 'docx') {
-    // Plain paragraphs for reading and editing in Word: no times, no tag marks; the script as shown.
-    const tr = S.doc.transcript;
+    // No times, no tag marks, the script as shown. With a column besides the text, the text is a table of the chosen
+    // columns: one row per line with the time, else one row per run of a speaker's lines.
     const subtitle = callLine(tr) || [tr.createdAt ? new Date(tr.createdAt).toLocaleString('sr-Latn') : '', S.doc.durationMs ? clock(S.doc.durationMs) : ''].filter(Boolean).join(' · ');
-    const bytes = toDocx({ title: S.doc.title, subtitle, paragraphs: segs.map((s) => s.text), lang: docxLang(docLang(), prefs.latin) });
+    let table = null;
+    if (cols.time || cols.speaker) {
+      const head = [...(cols.time ? [t('colTime')] : []), ...(cols.speaker ? [t('colSpeaker')] : []), t('colText')];
+      const widths = [...(cols.time ? [1250] : []), ...(cols.speaker ? [1900] : []), null]; // 1250: "Vreme" and 1:05:12 on one line
+      const rows = cols.time
+        ? segs.map((s) => [clock(s.start), ...(cols.speaker ? [nameOf(s)] : []), s.text])
+        : spk.runs(segs).flatMap((r) => (r.speaker ? [[nameOf(r.lines[0]), r.lines.map((s) => s.text).join(' ')]] : r.lines.map((s) => ['', s.text])));
+      table = { head, widths, rows };
+    }
+    const bytes = toDocx({ title: S.doc.title, subtitle, paragraphs: segs.map((s) => s.text), table, lang: docxLang(docLang(), prefs.latin) });
     downloadBlob(new Blob([bytes], { type: DOCX_TYPE }), `${base}.docx`);
-  } else if (kind === 'txt') downloadText(toTxt(segs, { header: [S.doc.title, callLine(S.doc.transcript)].filter(Boolean).join(' · '), tags: tagsOf() }), `${base}.txt`);
-  else if (kind === 'srt') downloadText(toSrt(segs), `${base}.srt`, 'application/x-subrip');
-  else downloadText(toVtt(segs), `${base}.vtt`, 'text/vtt');
+  } else if (kind === 'txt') {
+    downloadText(toTxt(segs, { header: [S.doc.title, callLine(tr)].filter(Boolean).join(' · '), tags: tagsOf(), nameOf, times: cols.time }), `${base}.txt`);
+  } else if (kind === 'srt') downloadText(toSrt(segs, { nameOf }), `${base}.srt`, 'application/x-subrip');
+  else if (kind === 'vtt') downloadText(toVtt(segs, { nameOf }), `${base}.vtt`, 'text/vtt');
 }
 
 async function revert() {
   if (!(await confirmBox(t('revertTitle'), t('revertText'), t('revert')))) return;
   commitEdit();
   S.hasEdited = false;
-  S.segs = S.doc.transcript.segments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  S.segs = S.doc.transcript.segments.map(lineCopy);
   recordVersion('reset', null);
   renderLines();
   await saveNow();
@@ -1698,6 +1894,19 @@ function wire() {
   $('#back').addEventListener('click', showStart);
   $('#save-phone').addEventListener('click', savePhoneBundle);
   wireSaveAs();
+  $('#speakers').addEventListener('click', openSpeakers);
+  $('#spk-add').addEventListener('click', () => { spk.addSpeaker(S.doc.transcript, { names: callNames() }); updateChips(); saveNow(); renderSpeakers(); });
+  const spkMenu = $('#spk-menu');
+  spkMenu.addEventListener('keydown', (e) => {
+    const items = [...spkMenu.querySelectorAll('.menu-item')];
+    const k = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(k + 1) % items.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(k - 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSpeakerMenu(true); }
+    else if (/^[1-9]$/.test(e.key) && items[Number(e.key) - 1]?.classList.contains('sw')) { e.preventDefault(); items[Number(e.key) - 1].click(); }
+  });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#spk-menu, .lspk')) closeSpeakerMenu(); });
+  spkMenu.addEventListener('focusout', (e) => { if (!e.relatedTarget?.closest?.('#spk-menu')) closeSpeakerMenu(); });
   $('#revert').addEventListener('click', revert);
   $('#history').addEventListener('click', openHistory);
   $('#save-version').addEventListener('click', saveVersion);

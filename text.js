@@ -116,22 +116,32 @@ export const TAG_SYMBOLS = { IMPORTANT: '★', DECISION: '✓', TODO: '☐', QUE
 export const tagCovers = (tag, s) => s.start < tag.end && s.end > tag.start;
 
 /** One "[mm:ss] text" line per segment; tagged lines carry the tag symbol(s) in front, as the phone's export. */
-export function toTxt(segments, { header = null, tags = [] } = {}) {
+/** [nameOf] gives a line's speaker name ("" for none): "[00:12] Pera: text". */
+export function toTxt(segments, { header = null, tags = [], nameOf = () => '', times = true } = {}) {
   let out = header ? `${header}\n\n` : '';
   for (const s of segments) {
     const marks = [...new Set(tags.filter((g) => tagCovers(g, s)).map((g) => TAG_SYMBOLS[g.kind] || TAG_SYMBOLS.CUSTOM))].join('');
     if (marks) out += marks + ' ';
-    out += `[${clock(s.start)}] ${s.text}\n`;
+    const who = nameOf(s);
+    out += `${times ? `[${clock(s.start)}] ` : ''}${who ? `${who}: ` : ''}${s.text}\n`;
   }
   return out;
 }
 
-export function toSrt(segments) {
-  return segments.map((s, i) => `${i + 1}\n${stamp(s.start, ',')} --> ${stamp(s.end, ',')}\n${s.text}\n\n`).join('');
+export function toSrt(segments, { nameOf = () => '' } = {}) {
+  return segments.map((s, i) => {
+    const who = nameOf(s);
+    return `${i + 1}\n${stamp(s.start, ',')} --> ${stamp(s.end, ',')}\n${who ? `${who}: ` : ''}${s.text}\n\n`;
+  }).join('');
 }
 
-export function toVtt(segments) {
-  return 'WEBVTT\n\n' + segments.map((s) => `${stamp(s.start, '.')} --> ${stamp(s.end, '.')}\n${s.text}\n\n`).join('');
+/** VTT names a speaker with its own voice tag: <v Pera>text. */
+export function toVtt(segments, { nameOf = () => '' } = {}) {
+  const voice = (n) => n.replace(/[<>&]/g, '');
+  return 'WEBVTT\n\n' + segments.map((s) => {
+    const who = nameOf(s);
+    return `${stamp(s.start, '.')} --> ${stamp(s.end, '.')}\n${who ? `<v ${voice(who)}>` : ''}${s.text}\n\n`;
+  }).join('');
 }
 
 /** File-safe base name from a title, as the phone's suggestedFileName. */
@@ -152,16 +162,20 @@ export function splitSegment(seg, pos) {
   const ratio = text.length > 0 ? p / text.length : 0.5;
   let cut = Math.round(seg.start + (seg.end - seg.start) * ratio);
   cut = Math.max(seg.start, Math.min(seg.end, cut));
+  // both halves keep the line's speaker (speakers.js): the user then corrects the one that changed
+  const who = seg.speaker ? { speaker: seg.speaker, speakerBy: seg.speakerBy || 'user' } : {};
   return [
-    { start: seg.start, end: cut, text: text.slice(0, p).replace(/\s+$/u, '') },
-    { start: cut, end: seg.end, text: text.slice(p).replace(/^\s+/u, '') },
+    { start: seg.start, end: cut, text: text.slice(0, p).replace(/\s+$/u, ''), ...who },
+    { start: cut, end: seg.end, text: text.slice(p).replace(/^\s+/u, ''), ...who },
   ];
 }
 
-/** Joins a segment with the next one: earliest start, latest end, texts joined by one space. */
+/** Joins a segment with the next one: earliest start, latest end, texts joined by one space; the first one's speaker. */
 export function joinSegments(a, b) {
   const parts = [a.text.replace(/\s+$/u, ''), b.text.replace(/^\s+/u, '')].filter((t) => t.length > 0);
-  return { start: Math.min(a.start, b.start), end: Math.max(a.end, b.end), text: parts.join(' ') };
+  const src = a.speaker ? a : b.speaker ? b : null;
+  const who = src ? { speaker: src.speaker, speakerBy: src.speakerBy || 'user' } : {};
+  return { start: Math.min(a.start, b.start), end: Math.max(a.end, b.end), text: parts.join(' '), ...who };
 }
 
 /**

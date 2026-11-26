@@ -1,4 +1,5 @@
 // Version history of a transcript's text (docs/bundle-format.md, "Version history"). DOM-free.
+import { lineCopy } from './speakers.js';
 // The phone implements the same rules; change both together.
 
 /** Two `edit` versions from the same device closer than this are one version (one typing session). */
@@ -24,7 +25,8 @@ export function previewPairs(prev, now) {
 const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 const list = (history) => (Array.isArray(history) ? history.filter((v) => v && typeof v === 'object') : []);
-const copySegs = (segs) => (segs == null ? null : segs.map((s) => ({ start: s.start, end: s.end, text: s.text })));
+// a version keeps each line's speaker too (speakers.js), so restoring it brings the speakers back
+const copySegs = (segs) => (segs == null ? null : segs.map(lineCopy));
 
 /** Rule 5: the last entry's n, or 1 for an empty history. */
 export function currentVersion(history) {
@@ -59,11 +61,12 @@ export function textOf(transcript, entry) {
   return entry.segments ?? transcript.segments ?? [];
 }
 
-/** Same lines with the same start, end and text. */
+/** Same lines with the same start, end, text and speaker (marking a speaker is an edit like typing). */
 export function sameText(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (a[i].start !== b[i].start || a[i].end !== b[i].end || a[i].text !== b[i].text) return false;
+    if ((a[i].speaker ?? null) !== (b[i].speaker ?? null)) return false;
   }
   return true;
 }

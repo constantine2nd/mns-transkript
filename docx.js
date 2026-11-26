@@ -21,11 +21,14 @@ export function docxLang(lang, latin) {
 
 const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
 
-function para(text, style) {
+/** A paragraph; [p] is its text, or {name, text} for a speaker's turn: the name in bold, then the text. */
+function para(p, style) {
   const pPr = style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : '';
+  const text = typeof p === 'object' && p ? p.text : p;
+  const name = typeof p === 'object' && p?.name ? `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${xmlText(p.name)}: </w:t></w:r>` : '';
   // A line break inside a line stays a break, not a new paragraph.
   const runs = String(text ?? '').split('\n').map((part, i) => `${i ? '<w:br/>' : ''}<w:t xml:space="preserve">${xmlText(part)}</w:t>`).join('');
-  return `<w:p>${pPr}<w:r>${runs}</w:r></w:p>`;
+  return `<w:p>${pPr}${name}<w:r>${runs}</w:r></w:p>`;
 }
 
 function styles(lang) {
@@ -41,12 +44,39 @@ function styles(lang) {
 </w:styles>`;
 }
 
+const CELL_BORDER = '<w:top w:val="single" w:sz="4" w:color="BFBFBF"/><w:left w:val="single" w:sz="4" w:color="BFBFBF"/><w:bottom w:val="single" w:sz="4" w:color="BFBFBF"/><w:right w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideH w:val="single" w:sz="4" w:color="BFBFBF"/><w:insideV w:val="single" w:sz="4" w:color="BFBFBF"/>';
+const TEXT_WIDTH = 9026; // A4 less the two 1440 margins, in twentieths of a point
+
+function cell(text, width, bold = false) {
+  const rPr = bold ? '<w:rPr><w:b/></w:rPr>' : '';
+  const runs = String(text ?? '').split('\n').map((part, i) => `${i ? '<w:br/>' : ''}<w:t xml:space="preserve">${xmlText(part)}</w:t>`).join('');
+  return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPr}${runs}</w:r></w:p></w:tc>`;
+}
+
 /**
- * The .docx bytes. [paragraphs] are the lines' texts as shown (script already applied); [lang] a tag from docxLang.
- * @param {{title: string, subtitle?: string|null, paragraphs: string[], lang: string, date?: Date}} doc
+ * A table of the columns the user chose ({head: ['Vreme', 'Tekst'], widths: [1100, null], rows: [['00:12', '…']]}).
+ * A null width takes what the others leave; the header row repeats on every page.
  */
-export function toDocx({ title, subtitle = null, paragraphs, lang, date = new Date() }) {
-  const body = [para(title, 'Title'), subtitle ? para(subtitle, 'Subtitle') : '', ...paragraphs.map((p) => para(p))].join('');
+function table({ head, widths, rows }) {
+  const fixed = widths.reduce((a, w) => a + (w || 0), 0);
+  const free = widths.filter((w) => !w).length || 1;
+  const ws = widths.map((w) => w || Math.floor((TEXT_WIDTH - fixed) / free));
+  const grid = ws.map((w) => `<w:gridCol w:w="${w}"/>`).join('');
+  const headRow = `<w:tr><w:trPr><w:tblHeader/></w:trPr>${head.map((h, k) => cell(h, ws[k], true)).join('')}</w:tr>`;
+  const body = rows.map((r) => `<w:tr><w:trPr><w:cantSplit/></w:trPr>${r.map((c, k) => cell(c, ws[k])).join('')}</w:tr>`).join('');
+  return `<w:tbl><w:tblPr><w:tblW w:w="${TEXT_WIDTH}" w:type="dxa"/><w:tblBorders>${CELL_BORDER}</w:tblBorders><w:tblLayout w:type="fixed"/><w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="80" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${grid}</w:tblGrid>${headRow}${body}</w:tbl><w:p/>`;
+}
+
+/**
+ * The .docx bytes. [paragraphs] are the texts as shown (script already applied), or {name, text} for a speaker's turn
+ * (speakers.js runs); with [table] (columns the user chose: time, speaker, text) the text is that table instead.
+ * [lang] is a tag from docxLang.
+ * @param {{title: string, subtitle?: string|null, paragraphs?: Array<string|{name: string, text: string}>,
+ *          table?: {head: string[], widths: Array<number|null>, rows: string[][]}, lang: string, date?: Date}} doc
+ */
+export function toDocx({ title, subtitle = null, paragraphs = [], table: tbl = null, lang, date = new Date() }) {
+  const text = tbl ? table(tbl) : paragraphs.map((p) => para(p)).join('');
+  const body = [para(title, 'Title'), subtitle ? para(subtitle, 'Subtitle') : '', text].join('');
   const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document ${W}><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
   const iso = date.toISOString().replace(/\.\d+Z$/, 'Z');

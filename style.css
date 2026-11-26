@@ -44,8 +44,13 @@
     --changed: #ffc11b;
     --mark: #ffc11b;
     --shadow: none;
+    --spk0: #63b3ed; --spk1: #f6ad55; --spk2: #68d391; --spk3: #f687b3; --spk4: #b794f4; --spk5: #e2b33c;
     color-scheme: dark;
 }
+
+/* Speaker colours (speakers.js colourOf): a bar and a dot next to the name, never behind text. Each is at least
+   3:1 against the page in its theme, as a non-text mark must be. */
+:root { --spk0: #2b6cb0; --spk1: #c05621; --spk2: #2f855a; --spk3: #b83280; --spk4: #6b46c1; --spk5: #8a5a12; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -140,6 +145,7 @@ h2 { font-size: 1.1rem; margin-bottom: 0.6rem; }
 .drop-hint { color: var(--muted); font-size: 1.05rem; }
 /* On the drag tint grey text fell to 3.99:1 (26 Nov 2026, Moj Novi Sad yellow); like a playing line's time, it turns full colour. */
 .drop.over .drop-hint { color: var(--text); }
+fieldset.cols { border: 0; margin: 8px 0; padding: 0; }
 .inline-check { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 0.9rem; cursor: pointer; }
 .asr-why { margin: 6px 0 0; padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--border-strong); }
 .small { font-size: 0.88rem; }
@@ -245,9 +251,36 @@ input[type=checkbox] { accent-color: var(--brand-strong); width: 16px; height: 1
 .seg-toggle .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; border-left: 0; }
 
 .lines { list-style: none; margin: 10px 0 40vh; padding: 0; }
+/* Speakers (who is talking). Without any yet, the column is narrow and its "+" shows on the hovered or focused line. */
+.lines:not(.has-speakers) .line { grid-template-columns: 4.6rem 1.6rem 1.2rem 1fr 2rem; }
+.lspk {
+  min-width: 0; max-width: 100%; margin-top: 3px; padding: 1px 6px 1px 8px;
+  border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: 6px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 0.85rem; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.lspk:hover { border-color: var(--border-strong); }
+.lspk.none { color: var(--muted); border-left-width: 1px; text-align: center; padding: 1px 4px; opacity: 0; }
+.line:hover .lspk.none, .line:focus-within .lspk.none, .lspk.none:focus, .lspk[aria-expanded="true"] { opacity: 1; }
+/* the next lines of the same speaker: only the coloured bar, the name stays on the first line of the run */
+.lspk.cont { width: 4px; padding: 0; border: 0; border-left: 4px solid; align-self: stretch; margin: 0; border-radius: 2px; }
+.lspk.c0, .sw.c0::before, .swatch.c0 { border-left-color: var(--spk0); --c: var(--spk0); }
+.lspk.c1, .sw.c1::before, .swatch.c1 { border-left-color: var(--spk1); --c: var(--spk1); }
+.lspk.c2, .sw.c2::before, .swatch.c2 { border-left-color: var(--spk2); --c: var(--spk2); }
+.lspk.c3, .sw.c3::before, .swatch.c3 { border-left-color: var(--spk3); --c: var(--spk3); }
+.lspk.c4, .sw.c4::before, .swatch.c4 { border-left-color: var(--spk4); --c: var(--spk4); }
+.lspk.c5, .sw.c5::before, .swatch.c5 { border-left-color: var(--spk5); --c: var(--spk5); }
+.spk-menu { position: absolute; top: 0; left: 0; min-width: 12rem; }
+.menu-item.sw::before { content: ""; display: inline-block; width: 0.7em; height: 0.7em; margin-right: 8px; border-radius: 50%; background: var(--c); vertical-align: middle; }
+.menu-item.on { font-weight: 700; }
+.spk-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.spk-row { display: grid; grid-template-columns: 1rem minmax(8rem, 1fr) auto auto auto; gap: 8px; align-items: center; }
+.swatch { width: 1rem; height: 1rem; border-radius: 50%; background: var(--c); }
+.spk-name, .spk-merge { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); min-width: 0; }
+@media (max-width: 640px) { .spk-row { grid-template-columns: 1rem 1fr; } .spk-row > :nth-child(n+3) { grid-column: 2; justify-self: start; } }
 .line {
   display: grid;
-  grid-template-columns: 4.6rem 1.2rem 1fr 2rem;
+  grid-template-columns: 4.6rem 6.5rem 1.2rem 1fr 2rem;
   align-items: start;
   gap: 4px;
   padding: 3px 4px;
@@ -388,7 +421,7 @@ progress { width: 100%; height: 8px; accent-color: var(--brand-strong); }
 .diff .doubt { background: var(--brand); color: var(--on-brand); border-radius: 3px; padding: 0 2px; }
 
 @media (max-width: 640px) {
-  .line { grid-template-columns: 3.8rem 1rem 1fr 1.8rem; }
+  .line { grid-template-columns: 3.8rem 4.2rem 1rem 1fr 1.8rem; }
   .ljoin { opacity: 1; }
 }
 
