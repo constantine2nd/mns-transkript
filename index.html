@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="sr-Latn">
+<html lang="sr-Latn" data-v="2.5 · 2026-11-27">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -59,7 +59,10 @@
     <section class="saved">
       <div class="saved-head">
         <h2 data-i18n="savedTitle"></h2>
-        <button id="pick-bundle" class="btn" type="button" data-i18n="openBundle" data-i18n-title="openBundleHint"></button>
+        <div class="saved-actions">
+          <button id="merge-open" class="btn" type="button" data-i18n="mergeOpen" data-i18n-title="mergeHint" hidden></button>
+          <button id="pick-bundle" class="btn" type="button" data-i18n="openBundle" data-i18n-title="openBundleHint"></button>
+        </div>
         <input id="file" type="file" accept=".zip,application/zip" hidden>
       </div>
       <ul id="saved-list" class="saved-list"></ul>
@@ -131,6 +134,19 @@
     <h2 id="confirm-title"></h2>
     <p id="confirm-text"></p>
     <div class="dlg-actions" id="confirm-actions"></div>
+  </dialog>
+
+  <dialog id="dlg-merge" class="dlg wide" aria-labelledby="merge-title">
+    <h2 id="merge-title" data-i18n="mergeTitle"></h2>
+    <p class="muted" data-i18n="mergeHint"></p>
+    <ul id="merge-list" class="merge-list"></ul>
+    <label class="field"><span data-i18n="mergeName"></span>
+      <input id="merge-name" type="text" maxlength="200" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="dlg-actions">
+      <button class="btn ghost" type="button" data-close data-i18n="cancel"></button>
+      <button id="merge-go" class="btn primary" type="button" data-i18n="mergeGo"></button>
+    </div>
   </dialog>
 
   <dialog id="dlg-rename" class="dlg" aria-labelledby="rename-title">

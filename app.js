@@ -3,6 +3,7 @@
 import { t } from './i18n.js';
 import { toDocx, docxLang, DOCX_TYPE } from './docx.js';
 import * as spk from './speakers.js';
+import { mergeTranscripts } from './merge.js';
 import { lineCopy } from './speakers.js';
 import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle, audioEntry } from './bundle.js';
 import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers } from './text.js';
@@ -13,6 +14,23 @@ import * as asr from './asr.js';
 import * as gemini from './gemini.js';
 import { SAMPLE_RATE, windows, isSilent, placePieces, mergeSentences, newTranscriptId } from './speech.js';
 import { DOWNLOAD_MB, ENGINE } from './asr-model.js';
+
+// The page and its scripts must be one version. The offline worker takes each file from the network and falls back
+// to its cache per file, so a load during a network hiccup can pair an old cached index.html with new scripts
+// (27 Nov 2026, a user's screen after a transcription: the 2.0 page under 2.4.1 scripts, raw "dropTitle" labels,
+// an empty list). The build stamps index.html with its version; a page stamped otherwise, or not at all, is loaded
+// again, once per tab. The unbuilt template still has the placeholder and is left alone.
+{
+  const stamp = document.documentElement.dataset.v;
+  const stale = !(stamp ?? '').startsWith('{{') && stamp !== self.APP_VERSION;
+  const key = `reloaded-for-${self.APP_VERSION}`;
+  let again = false;
+  try { again = stale && !sessionStorage.getItem(key); if (again) sessionStorage.setItem(key, '1'); } catch { /* no storage: no reload */ }
+  if (again) {
+    setTimeout(() => location.reload(), 1500); // a moment for the network to be back
+    throw new Error(`page ${stamp ?? 'without a version'} under scripts ${self.APP_VERSION}: reloading`);
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -154,6 +172,7 @@ async function renderSaved() {
   const list = $('#saved-list');
   list.replaceChildren();
   $('#saved-empty').hidden = docs.length > 0;
+  $('#merge-open').hidden = docs.filter((d) => !d.asr && d.transcript).length < 2;
   for (const d of docs) {
     const li = el('li', 'saved-item');
     const info = el('div', 'saved-info');
@@ -214,6 +233,90 @@ async function renderSaved() {
     li.append(info, ...actions, ren, del);
     list.append(li);
   }
+}
+
+/**
+ * "Spoji transkripte": several finished transcripts as one conversation (merge.js). The parts go in the order of
+ * the dialog's list: by recording time to begin with, changed with the arrows of each row. The new transcript
+ * opens when made.
+ */
+async function openMerge() {
+  const docs = (await store.listDocs()).filter((d) => !d.asr && d.transcript);
+  docs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.title).localeCompare(String(b.title), undefined, { numeric: true }));
+  const d = $('#dlg-merge');
+  const list = $('#merge-list');
+  const name = $('#merge-name');
+  const go = $('#merge-go');
+  let typed = false;
+  const rowDoc = new Map();
+  const picked = () => [...list.children].filter((li) => li.querySelector('input').checked).map((li) => rowDoc.get(li));
+  const arrows = () => {
+    [...list.children].forEach((li, k) => {
+      li.querySelector('.up').disabled = k === 0;
+      li.querySelector('.down').disabled = k === list.children.length - 1;
+    });
+  };
+  const move = (li, down, btn) => {
+    if (down) li.nextElementSibling?.after(li); else li.previousElementSibling?.before(li);
+    arrows();
+    refresh();
+    (btn.disabled ? li.querySelector(down ? '.up' : '.down') : btn).focus();
+  };
+  const refresh = () => {
+    const sel = picked();
+    go.disabled = sel.length < 2;
+    if (!typed) name.value = sel.length ? (sel.length > 1 ? t('mergeJoinedName', sel[0].title || sel[0].id, sel.length - 1) : sel[0].title || sel[0].id) : '';
+  };
+  list.replaceChildren(...docs.map((doc) => {
+    const li = el('li');
+    const label = el('label');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.addEventListener('change', refresh);
+    const parts = [];
+    if (doc.createdAt) parts.push(new Date(doc.createdAt).toLocaleString('sr-Latn'));
+    if (doc.durationMs) parts.push(clock(doc.durationMs));
+    parts.push(langName(doc.transcript.language));
+    label.append(box, el('span', '', doc.title || doc.id), el('span', 'muted', parts.join(' · ')));
+    const arrow = (cls, text, key, down) => {
+      const b = el('button', `btn ghost small ${cls}`, text);
+      b.type = 'button';
+      b.title = t(key, doc.title || doc.id);
+      b.setAttribute('aria-label', b.title);
+      b.addEventListener('click', () => move(li, down, b));
+      return b;
+    };
+    li.append(label, arrow('up', '↑', 'mergeUp', false), arrow('down', '↓', 'mergeDown', true));
+    rowDoc.set(li, doc);
+    return li;
+  }));
+  arrows();
+  name.oninput = () => { typed = name.value.trim() !== ''; };
+  refresh();
+  go.onclick = async () => {
+    const sel = picked();
+    if (sel.length < 2) return;
+    const now = new Date();
+    let id = newTranscriptId(now);
+    while (await store.getDoc(id)) id = newTranscriptId(now);
+    const title = name.value.trim() || t('mergeJoinedName', sel[0].title || sel[0].id, sel.length - 1);
+    const transcript = mergeTranscripts(sel.map((x) => ({ transcript: x.transcript, durationMs: x.durationMs })), { id, title, now: now.getTime() });
+    const fp = await fingerprint(transcript.segments);
+    try {
+      await store.putDoc({
+        id, title, createdAt: transcript.createdAt, durationMs: transcript.durationMs, transcript,
+        loadedFp: fp, baseFp: fp, baseSegs: null, currentFp: fp, hasAudio: false, savedAt: Date.now(),
+      });
+    } catch (e) {
+      d.close();
+      showMsg($('#start-msg'), t('errStorage', e.message || String(e)), true);
+      return;
+    }
+    d.close();
+    await openDoc(id);
+    flash(t('mergeDone', sel.length));
+  };
+  d.showModal();
 }
 
 /**
@@ -2050,6 +2153,7 @@ function wire() {
   for (const d of document.querySelectorAll('dialog:not(#dlg-asr)')) closeOnBackdrop(d);
   $('#dlg-asr').addEventListener('cancel', (e) => e.preventDefault());
   $('#asr-stop').addEventListener('click', stopAsr);
+  $('#merge-open').addEventListener('click', openMerge);
   $('#asr-lang-dlg').addEventListener('change', async (e) => {
     const id = ASR.current;
     const was = ASR.doc?.asr?.lang || 'sr';
