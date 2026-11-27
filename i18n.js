@@ -187,7 +187,7 @@ export const STRINGS = {
     histOnlySpeakers: 'Tekst je isti kao u prethodnoj verziji; promenjeno je samo ko govori.',
     histCurrent: 'trenutna',
     histShow: 'Prikaži tekst',
-    histNoTextChange: 'Tekst se nije promenio u odnosu na prethodnu verziju (samo podela redova ili razmaci).',
+    histNoTextChange: 'Tekst se nije promenio u odnosu na prethodnu verziju.',
     histRestoreBtn: 'Vrati ovu verziju',
     histRestoreTitle: 'Vratiti v{0}?',
     histRestoreText: 'Tekst v{0} postaje trenutni, kao nova verzija. Sve verzije ostaju u istoriji.',

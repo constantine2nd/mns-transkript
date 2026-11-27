@@ -1383,10 +1383,11 @@ function openHistory() {
       const pairs = hist.previewPairs(i > 0 ? hist.textOf(tr, all[i - 1]) : null, text);
       const ol = el('ol', 'hist-lines');
       let changed = 0;
-      for (const { seg, old } of pairs) {
-        const now = display(seg.text);
+      for (const { seg, old, shown, regrouped } of pairs) {
+        const now = display(shown);
         const was = old == null ? null : display(old);
-        const isChanged = was != null && was.trim().replace(/\s+/g, ' ') !== now.trim().replace(/\s+/g, ' ');
+        // a split or joined line is a change too: its "¶" shows where a line now ends or no longer does
+        const isChanged = was != null && (regrouped || was.trim().replace(/\s+/g, ' ') !== now.trim().replace(/\s+/g, ' '));
         if (isChanged) changed++;
         const row = el('li', isChanged ? 'changed' : 'same');
         row.append(hasAudio() ? clipButton(seg.start, seg.end, clock(seg.start)) : el('span', 'hist-time', clock(seg.start)));
