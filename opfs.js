@@ -41,6 +41,8 @@ export const opfsCache = {
         await response.body.pipeTo(w);
       } catch (e) {
         await w.abort().catch(() => {});
+        // the empty file made above would look like a stored one in the list of files
+        try { if ((await handle.getFile()).size === 0) await (await dir()).removeEntry(name); } catch { /* in use elsewhere */ }
         throw e;
       }
     } finally {

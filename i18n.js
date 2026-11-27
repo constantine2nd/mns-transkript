@@ -81,6 +81,7 @@ export const STRINGS = {
     exportWithAudio: 'Sa snimkom ({0})',
     savedBundle: 'Izvezeno: {0}, sa snimkom. Na telefonu se uvozi dugmetom „Audio fajl“ ili deljenjem aplikaciji.',
     savedBundleNoAudio: 'Izvezeno: {0}, bez snimka. Na telefonu se uvozi dugmetom „Audio fajl“ ili deljenjem aplikaciji.',
+    bundleDroppedVersions: 'Istorija je prevelika za paket: najstarije verzije ({0}) nisu u njemu. Ovde ostaju sačuvane.',
     lineChanged: 'izmenjen red',
     lineLabel: 'Red {0}, {1}',
     playFrom: 'Pusti od {0}',

@@ -155,10 +155,16 @@ export function mergeIncoming(local, incoming) {
   }
   const mine = new Map();
   for (const s of local.editedSegments ?? local.segments ?? []) if (s.speaker) mine.set(`${s.start}-${s.end}`, s);
-  const lines = incoming.editedSegments ?? incoming.segments ?? [];
+  let lines = incoming.editedSegments ?? incoming.segments ?? [];
+  const carried = (s) => (s.speaker ? null : mine.get(`${s.start}-${s.end}`));
+  // The machine lines are never changed (docs/bundle-format.md): with no edited copy to mark, make one first, or
+  // "Vrati original" could not clear these speakers.
+  if (incoming.editedSegments == null && lines.some(carried)) {
+    incoming.editedSegments = lines.map(lineCopy);
+    lines = incoming.editedSegments;
+  }
   for (const s of lines) {
-    if (s.speaker) continue;
-    const m = mine.get(`${s.start}-${s.end}`);
+    const m = carried(s);
     if (m) { s.speaker = m.speaker; s.speakerBy = m.speakerBy || 'user'; }
   }
   // keep the local order first (colours stay), then any new ones from the other side

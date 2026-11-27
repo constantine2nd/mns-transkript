@@ -87,7 +87,13 @@ function flash(text, warn = false) {
 // ------------------------------------------------------------------ dialogs
 
 function closeOnBackdrop(d) {
-  d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+  // The dialog is also the target of a click on its own padding or between its blocks: only one that lands outside
+  // its box is a click on the backdrop. (A stray click beside the buttons closed it and aborted a Gemini request.)
+  d.addEventListener('click', (e) => {
+    if (e.target !== d) return;
+    const r = d.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) d.close();
+  });
   for (const b of d.querySelectorAll('[data-close]')) b.addEventListener('click', () => d.close());
 }
 
@@ -266,6 +272,14 @@ async function changeAsrLang(id, lang) {
   const live = () => (ASR.doc?.id === id ? ASR.doc : null);
   const doc = live() ?? await store.getDoc(id);
   if (!doc?.asr) return false;
+  if (ASR.current === id && ASR.relang) {
+    // A change is already waiting for the window to end. The same again: nothing to do. Back to the language it
+    // runs in: the change is called off, and nothing is dropped (the record still says the old language, so
+    // without this the first choice was applied although the selector showed the second).
+    if (ASR.relang !== lang && (doc.asr.lang || 'sr') === lang) ASR.relang = null;
+    else ASR.relang = lang;
+    return true;
+  }
   if ((doc.asr.lang || 'sr') === lang) return true;
   if ((doc.asr.done || 0) > 0
     && !(await confirmBox(t('asrRelangTitle'), t('asrRelangText', asrPercent(doc), langName(lang)), t('asrRelangBtn')))) return false;
@@ -340,6 +354,11 @@ async function importFile(file) {
       if (pick === 'mine') { showMsg(msg, ''); await openDoc(id); return; }
     }
     // Taking the incoming text over a local copy: keep the versions made here too (history rule 3).
+    // First the local text itself, when it is not a version yet (typed and saved, then the tab closed before a
+    // version was made): rule 2, or taking the phone's text would leave it in no version at all.
+    if (local?.transcript && !local.asr) {
+      local.transcript.history = hist.record(local.transcript, { source: 'edit', device: 'web', segments: local.transcript.editedSegments ?? null, now: Date.now() - 1 });
+    }
     if (local) transcript.history = hist.merge(local.transcript?.history, transcript.history);
     // The fingerprint covers only times and text: without this, taking a copy with the same text dropped our speakers.
     if (local) spk.mergeIncoming(local.transcript, transcript);
@@ -485,7 +504,10 @@ async function askAsrLang(files) {
 /** Stores [file] as a new, not yet transcribed transcript in language [lang]; returns its id. */
 async function addRecording(file, lang) {
   const now = new Date();
-  const id = newTranscriptId(now);
+  // The id is the second plus 4 random digits: two recordings of one batch could draw the same and the second
+  // replaced the first without a word.
+  let id = newTranscriptId(now);
+  while (await store.getDoc(id)) id = newTranscriptId(now);
   const title = file.name.replace(/\.[^.]+$/, '') || id;
   const createdAt = file.lastModified || now.getTime(); // a recording's file date is when it was recorded
   const transcript = {
@@ -1053,6 +1075,7 @@ function splitAt(i, ta) {
   else { s.text = ta.value; pos = ta.selectionStart; } // Cyrillic view of Latin text: keep the line as shown, like a typed edit
   const [a, b] = splitSegment(s, pos);
   S.segs.splice(i, 1, a, b);
+  if (S.current > i) S.current++; // the playing line moved down one, as joinAt moves it up
   edited();
   renderLines(i + 1, 0, i);
 }
@@ -1569,9 +1592,10 @@ async function exportDoc(doc, editedSegments) {
     if (pick === 'text') blob = null;
   }
   const audio = blob ? { name: audioEntry(blob.type, tr.sourceFile), data: new Uint8Array(await blob.arrayBuffer()) } : null;
-  const { bytes, fileName } = buildBundle({ transcript: tr, editedSegments, baseFingerprint: doc.baseFp, baseSegments: doc.baseSegs ?? null, audio });
+  const { bytes, fileName, droppedVersions } = buildBundle({ transcript: tr, editedSegments, baseFingerprint: doc.baseFp, baseSegments: doc.baseSegs ?? null, audio });
   downloadBlob(new Blob([bytes], { type: 'application/zip' }), fileName);
-  return t(audio ? 'savedBundle' : 'savedBundleNoAudio', fileName);
+  const done = t(audio ? 'savedBundle' : 'savedBundleNoAudio', fileName);
+  return droppedVersions ? `${done} ${t('bundleDroppedVersions', droppedVersions)}` : done;
 }
 
 /** "Sačuvaj kao…": a disclosure menu of the text formats. Escape or a click elsewhere closes it; arrows move. */
@@ -1600,6 +1624,10 @@ function wireSaveAs() {
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('.menu-wrap')) close(); });
   menu.addEventListener('focusout', (e) => { if (!e.relatedTarget?.closest?.('.menu-wrap')) close(); });
+  // Safari does not focus a clicked button: the focused item would lose focus to nothing on mousedown, the menu
+  // would close on that focusout and the click never arrive. Keeping the focus where it is avoids it (not tried in
+  // Safari, 27 Nov 2026; harmless elsewhere).
+  menu.addEventListener('mousedown', (e) => e.preventDefault());
 }
 
 /**
@@ -1992,6 +2020,7 @@ function setLatin(on) {
 // ------------------------------------------------------------------ global keys
 
 function moveLine(delta) {
+  if (!S.segs.length) return; // a silent recording opens with no lines
   const from = S.focused >= 0 ? S.focused : Math.max(0, S.current);
   const i = Math.max(0, Math.min(S.segs.length - 1, from + delta));
   focusLine(i);
@@ -2079,6 +2108,7 @@ function wire() {
   });
   document.addEventListener('click', (e) => { if (!e.target.closest('#spk-menu, .lspk')) closeSpeakerMenu(); });
   spkMenu.addEventListener('focusout', (e) => { if (!e.relatedTarget?.closest?.('#spk-menu')) closeSpeakerMenu(); });
+  spkMenu.addEventListener('mousedown', (e) => e.preventDefault()); // as the "Sačuvaj kao…" menu: Safari
   $('#revert').addEventListener('click', revert);
   $('#history').addEventListener('click', openHistory);
   $('#save-version').addEventListener('click', saveVersion);

@@ -110,8 +110,26 @@ export async function parseBundle(bytes, zipOpts) {
  * [baseFingerprint] is the fingerprint of the text as it came in (or as made here); [audio], {name, data}, is the
  * recording, named by audioEntry().
  */
-export function buildBundle({ transcript, editedSegments, baseFingerprint, baseSegments = null, audio = null, now = Date.now() }) {
+export function buildBundle({ transcript, editedSegments, baseFingerprint, baseSegments = null, audio = null, now = Date.now(), maxJsonBytes = MAX_JSON_BYTES }) {
   const t = { ...transcript, editedSegments: editedSegments ?? null };
+  // Every version holds the whole text, and both readers refuse a transcript.json over MAX_JSON_BYTES: a very long
+  // transcript with a full history exported fine and could then be opened nowhere. The oldest versions (never the
+  // original or the newest) are left out of the package until it fits; the history stored here keeps them.
+  const size = (v) => new TextEncoder().encode(JSON.stringify(v)).length;
+  let droppedVersions = 0;
+  if (Array.isArray(t.history) && t.history.length > 2) {
+    let total = size(t);
+    if (total > maxJsonBytes) {
+      const history = t.history.slice();
+      const first = history[0]?.id === 'original' ? 1 : 0;
+      while (total > maxJsonBytes && history.length > first + 1) {
+        total -= size(history[first]) + 1; // and its comma
+        history.splice(first, 1);
+        droppedVersions++;
+      }
+      t.history = history;
+    }
+  }
   const env = {
     format: FORMAT,
     version: VERSION,
@@ -129,7 +147,7 @@ export function buildBundle({ transcript, editedSegments, baseFingerprint, baseS
     { name: 'transcript.json', data: JSON.stringify(t) },
     ...(audio ? [{ name: audio.name, data: audio.data }] : []),
   ], new Date(now));
-  return { bytes: zip, fileName: `${baseName(transcript.title)} - editor.zip` };
+  return { bytes: zip, fileName: `${baseName(transcript.title)} - editor.zip`, droppedVersions };
 }
 
 /**

@@ -25,7 +25,8 @@ export async function support() {
 export async function modelState() {
   const files = await storedFiles();
   const bytes = files.reduce((n, f) => n + f.size, 0);
-  const downloaded = BIG_FILES.every((b) => files.some((f) => f.name.endsWith(b)));
+  // An empty file is a download that was cut off (opfs.js creates it before writing): not downloaded.
+  const downloaded = BIG_FILES.every((b) => files.some((f) => f.name.endsWith(b) && f.size > 0));
   return { downloaded, bytes };
 }
 
