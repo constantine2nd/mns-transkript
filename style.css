@@ -181,6 +181,7 @@ fieldset.cols { border: 0; margin: 8px 0; padding: 0; }
 .badge.unsure { background: transparent; border: 1px solid var(--brand-strong); color: var(--text); }
 .badge.big { background: transparent; border: 1px solid var(--red); color: var(--red); }
 /* The transcript's language: plain, beside the coloured status badges. */
+select.lang-pick { width: auto; padding: 1px 4px; font-size: 0.8rem; min-height: 0; }
 .badge.lang { background: transparent; border: 1px solid var(--muted); color: var(--text); letter-spacing: 0.04em; }
 
 .msg { margin: 10px 0; padding: 8px 12px; border-radius: var(--radius); background: var(--hl); }

@@ -159,7 +159,7 @@ async function renderSaved() {
     if (!d.hasAudio) parts.push(t('noAudio'));
     meta.textContent = parts.join(' · ');
     info.append(meta);
-    info.append(langBadge(d.transcript?.language || d.asr?.lang));
+    info.append(d.asr ? langPick(d) : langBadge(d.transcript?.language || d.asr?.lang));
     if (d.currentFp && d.currentFp !== d.loadedFp && !d.asr) info.append(el('span', 'badge', t('edited')));
     li.dataset.id = d.id;
     const running = ASR.current === d.id;
@@ -256,7 +256,58 @@ function langName(code) {
   return c === 'sr' ? t('langSr') : c === 'en' ? t('langEn') : c;
 }
 
-/** "SR" / "EN" on a saved transcript: its language, fixed when it was transcribed (a new one needs a new transcription). */
+/**
+ * The language of a recording that is not transcribed to the end yet (waiting, running or stopped) can still be
+ * changed (the user's wish, 27 Nov 2026: "sometimes we change the mind on the go"). What was already recognised
+ * is in the old language, so it is thrown away, after a question, and the transcription starts again. A finished
+ * transcript keeps its language. Returns whether the language is now [lang].
+ */
+async function changeAsrLang(id, lang) {
+  const live = () => (ASR.doc?.id === id ? ASR.doc : null);
+  const doc = live() ?? await store.getDoc(id);
+  if (!doc?.asr) return false;
+  if ((doc.asr.lang || 'sr') === lang) return true;
+  if ((doc.asr.done || 0) > 0
+    && !(await confirmBox(t('asrRelangTitle'), t('asrRelangText', asrPercent(doc), langName(lang)), t('asrRelangBtn')))) return false;
+  // a running one applies it itself, between two windows: the run owns the record while it runs
+  const toRun = () => {
+    if (ASR.current !== id) return false;
+    ASR.relang = lang;
+    if (ASR.doc) { setAsrPhase(t('asrRelanging'), null); $('#asr-detail').textContent = ''; }
+    return true;
+  };
+  if (toRun()) return true;
+  const fresh = await store.getDoc(id);
+  if (!fresh?.asr) return false;
+  fresh.asr.lang = lang;
+  fresh.asr.pieces = [];
+  fresh.asr.done = 0;
+  fresh.transcript.language = lang;
+  await store.putDoc(fresh);
+  toRun(); // its run started during that save, with the old language
+  return true;
+}
+
+/** The language of an unfinished recording on its card: a small list, since it can still be changed. */
+function langPick(d) {
+  const sel = el('select', 'lang-pick');
+  const now = d.asr.lang || 'sr';
+  for (const c of ['sr', 'en']) {
+    const o = el('option', '', c.toUpperCase());
+    o.value = c;
+    sel.append(o);
+  }
+  sel.value = now;
+  sel.title = t('asrLang');
+  sel.setAttribute('aria-label', t('asrLangOf', d.title || d.id));
+  sel.addEventListener('change', async () => {
+    if (!(await changeAsrLang(d.id, sel.value))) sel.value = now;
+    else if (ASR.current !== d.id) renderSaved();
+  });
+  return sel;
+}
+
+/** "SR" / "EN" on a saved transcript: its language, fixed once it is transcribed to the end (a new one needs a new transcription). */
 function langBadge(code) {
   const c = code || 'sr';
   const b = el('span', 'badge lang');
@@ -326,7 +377,7 @@ async function importFile(file) {
 // In-browser transcription runs one recording at a time, in the background: more can wait in [queue], and the
 // editor stays usable meanwhile. [current] is the id being transcribed; [show] opens the progress dialog for the
 // next run (a run the user just started from the start screen); [status] is its latest progress line.
-const ASR = { ok: false, why: '', running: false, stop: false, loading: false, transcriber: null,
+const ASR = { ok: false, why: '', running: false, stop: false, loading: false, transcriber: null, relang: null,
   queue: [], current: null, show: false, status: { text: '', fraction: null } };
 
 const AUDIO_EXT = /\.(m4a|mp3|wav|ogg|oga|opus|aac|flac|amr|3gp|webm|mp4)$/i;
@@ -384,6 +435,11 @@ async function transcribeFiles(files) {
   const audio = files.filter(isAudio);
   if (!audio.length) { showMsg(msg, t('asrNotAudio'), true); return; }
   if (!ASR.ok) { showMsg(msg, ASR.why || t('asrNoWebgpu'), true); return; }
+  // The language is asked for every time, with the last choice as the main button: the selector on the start
+  // screen is easy to overlook, and a wrong one is noticed only after the whole transcription (the user's wish,
+  // 27 Nov 2026).
+  const lang = await askAsrLang(audio);
+  if (!lang) return;
   const busy = ASR.current != null || ASR.queue.length > 0;
   if (!busy && !(await asr.modelState()).downloaded
     && !(await confirmBox(t('asrDownloadTitle'), t('asrDownloadText', DOWNLOAD_MB), t('asrDownload')))) return;
@@ -391,7 +447,7 @@ async function transcribeFiles(files) {
   let failed = null;
   for (const file of audio) {
     // A full disk fails the save: say so, stop there (the rest would fail too) and still queue what was stored.
-    try { ids.push(await addRecording(file)); } catch (e) { failed = e; break; }
+    try { ids.push(await addRecording(file, lang)); } catch (e) { failed = e; break; }
   }
   if (failed) {
     console.error(failed);
@@ -406,13 +462,32 @@ async function transcribeFiles(files) {
   enqueue(ids, { show: !busy && !$('#start').hidden });
 }
 
-/** Stores [file] as a new, not yet transcribed transcript in the language chosen now; returns its id. */
-async function addRecording(file) {
+/**
+ * Asks in which language [files] are, before anything is stored or transcribed. Returns "sr", "en", or null when
+ * cancelled. The answer also becomes the selector's value, so the next question offers it first.
+ */
+async function askAsrLang(files) {
+  const sel = $('#asr-lang');
+  const now = sel.value || 'sr';
+  const text = files.length === 1 ? t('asrLangAsk1', files[0].name) : t('asrLangAskN', files.length);
+  const lang = await choose(t('asrLangAskTitle'), text, [
+    { label: t('cancel'), value: null, cls: 'ghost' },
+    ...['sr', 'en'].map((c) => ({ label: t(c === 'sr' ? 'asrLangSr' : 'asrLangEn'), value: c, cls: c === now ? 'primary' : '' })),
+  ]);
+  if (lang && lang !== now) {
+    sel.value = lang;
+    prefs.asrLang = lang;
+    savePrefs();
+  }
+  return lang;
+}
+
+/** Stores [file] as a new, not yet transcribed transcript in language [lang]; returns its id. */
+async function addRecording(file, lang) {
   const now = new Date();
   const id = newTranscriptId(now);
   const title = file.name.replace(/\.[^.]+$/, '') || id;
   const createdAt = file.lastModified || now.getTime(); // a recording's file date is when it was recorded
-  const lang = $('#asr-lang').value || 'sr';
   const transcript = {
     id, title, createdAt, durationMs: 0, language: lang, segments: [], editedSegments: null, history: [],
     origin: 'web', engine: ENGINE, sourceFile: file.name,
@@ -551,8 +626,9 @@ async function runAsr(id) {
   ASR.doc = doc; // the copy this run saves after every window; a rename goes into it
   ASR.status = { text: '', fraction: null };
   const dlg = $('#dlg-asr');
-  // The language chosen when it started: a resume keeps it, whatever the selector says now.
+  // The language it was added with: a resume keeps it, whatever the start screen's selector says now.
   $('#asr-file-name').textContent = `${doc.title} · ${langName(doc.asr.lang)}`;
+  $('#asr-lang-dlg').value = doc.asr.lang || 'sr';
   $('#asr-detail').textContent = '';
   $('#asr-last').hidden = true;
   $('#asr-stop').disabled = false;
@@ -561,6 +637,20 @@ async function runAsr(id) {
   if (ASR.show) { ASR.show = false; if (!dlg.open) dlg.showModal(); }
   const diag = diagStart();
   let outcome = 'stopped';
+  // A language change asked for during this run (changeAsrLang): what was recognised so far is dropped.
+  const applyRelang = async () => {
+    const lang = ASR.relang;
+    ASR.relang = null;
+    if (!lang || !doc.asr || lang === (doc.asr.lang || 'sr')) return;
+    Object.assign(doc.asr, { lang, pieces: [], done: 0 });
+    doc.transcript.language = lang;
+    doc.savedAt = Date.now();
+    await store.putDoc(doc);
+    $('#asr-file-name').textContent = `${doc.title} · ${langName(lang)}`;
+    $('#asr-lang-dlg').value = lang;
+    $('#asr-last').hidden = true;
+    if ($('#editor').hidden) renderSaved();
+  };
   try {
     const downloading = !(await asr.modelState()).downloaded;
     setAsrPhase(t('asrLoadingModel'), null);
@@ -595,9 +685,9 @@ async function runAsr(id) {
     doc.durationMs = durMs;
     doc.transcript.durationMs = durMs;
     const st = doc.asr;
-    const from = Math.min(st.done || 0, pcm.length);
-    const ws = windows(pcm.subarray(from)).map(([a, b]) => [a + from, b + from]);
-    const t0 = performance.now();
+    let from = 0;
+    let ws = [];
+    let t0 = 0;
     const showProgress = (doneSamples) => {
       const done = doneSamples / pcm.length;
       setAsrPhase(t('asrProgress', clock((doneSamples / SAMPLE_RATE) * 1000), clock(durMs)), done);
@@ -610,34 +700,46 @@ async function runAsr(id) {
         $('#asr-detail').textContent = t('asrWarmup');
       }
     };
-    showProgress(from);
-    for (const w of ws) {
-      if (ASR.stop) break;
-      const tRun = performance.now();
-      if (!isSilent(pcm, w[0], w[1])) {
-        const placed = placePieces(await ASR.transcriber.run(pcm.subarray(w[0], w[1]), st.lang || 'sr'), pcm, w);
-        st.pieces.push(...placed);
-        if (placed.length) {
-          $('#asr-last').textContent = display(placed.at(-1).text, st.lang || 'sr');
-          $('#asr-last').hidden = false;
+    // Once more from the start whenever the language is changed on the way (changeAsrLang sets ASR.relang).
+    for (let again = true; again;) {
+      again = false;
+      await applyRelang();
+      from = Math.min(st.done || 0, pcm.length);
+      ws = windows(pcm.subarray(from)).map(([a, b]) => [a + from, b + from]);
+      t0 = performance.now();
+      showProgress(from);
+      for (const w of ws) {
+        if (ASR.stop) break;
+        if (ASR.relang) { again = true; break; }
+        const tRun = performance.now();
+        if (!isSilent(pcm, w[0], w[1])) {
+          const chunks = await ASR.transcriber.run(pcm.subarray(w[0], w[1]), st.lang || 'sr');
+          if (ASR.relang) { again = true; break; } // this window was heard in the old language
+          const placed = placePieces(chunks, pcm, w);
+          st.pieces.push(...placed);
+          if (placed.length) {
+            $('#asr-last').textContent = display(placed.at(-1).text, st.lang || 'sr');
+            $('#asr-last').hidden = false;
+          }
+        }
+        st.done = w[1];
+        doc.savedAt = Date.now();
+        const tSave = performance.now();
+        await store.putDoc(doc);
+        if (diag) {
+          diag.windows.push({ audio: Math.round((w[1] - w[0]) / SAMPLE_RATE), run: Math.round(tSave - tRun), save: Math.round(performance.now() - tSave),
+            pieces: st.pieces.length, kb: Math.round(JSON.stringify(st.pieces).length / 1024) });
+        }
+        showProgress(w[1]);
+        // Edge and Chrome draw every tab through the GPU process the recogniser keeps busy, so they freeze while it runs
+        // (26 Nov 2026; Firefox on Linux has no WebGPU). A pause after each window lets the browser catch up.
+        if (prefs.asrGentle !== false && w !== ws.at(-1)) {
+          const pause = Math.min(8000, Math.max(500, 0.3 * (performance.now() - tRun)));
+          for (const until = performance.now() + pause; performance.now() < until && !ASR.stop && !ASR.relang;) await new Promise((r) => setTimeout(r, 100));
+          if (diag) diag.windows.at(-1).pause = Math.round(pause);
         }
       }
-      st.done = w[1];
-      doc.savedAt = Date.now();
-      const tSave = performance.now();
-      await store.putDoc(doc);
-      if (diag) {
-        diag.windows.push({ audio: Math.round((w[1] - w[0]) / SAMPLE_RATE), run: Math.round(tSave - tRun), save: Math.round(performance.now() - tSave),
-          pieces: st.pieces.length, kb: Math.round(JSON.stringify(st.pieces).length / 1024) });
-      }
-      showProgress(w[1]);
-      // Edge and Chrome draw every tab through the GPU process the recogniser keeps busy, so they freeze while it runs
-      // (26 Nov 2026; Firefox on Linux has no WebGPU). A pause after each window lets the browser catch up.
-      if (prefs.asrGentle !== false && w !== ws.at(-1)) {
-        const pause = Math.min(8000, Math.max(500, 0.3 * (performance.now() - tRun)));
-        for (const until = performance.now() + pause; performance.now() < until && !ASR.stop;) await new Promise((r) => setTimeout(r, 100));
-        if (diag) diag.windows.at(-1).pause = Math.round(pause);
-      }
+      if (ASR.relang && !ASR.stop) again = true; // changed during the last window
     }
     if (!ASR.stop) {
       const segs = mergeSentences(st.pieces);
@@ -659,10 +761,13 @@ async function runAsr(id) {
       ASR.transcriber = null;
     }
   } finally {
+    // stopped before the change was applied: the recording still gets its new language, for when it is resumed
+    try { await applyRelang(); } catch (e) { console.error(e); }
     ASR.running = false;
     ASR.loading = false;
     ASR.current = null;
     ASR.doc = null;
+    ASR.relang = null;
     ASR.status = { text: '', fraction: null };
     diagEnd(diag);
     // Still watching: with more waiting the dialog stays open for the next one; with none left, the result opens
@@ -1916,6 +2021,11 @@ function wire() {
   for (const d of document.querySelectorAll('dialog:not(#dlg-asr)')) closeOnBackdrop(d);
   $('#dlg-asr').addEventListener('cancel', (e) => e.preventDefault());
   $('#asr-stop').addEventListener('click', stopAsr);
+  $('#asr-lang-dlg').addEventListener('change', async (e) => {
+    const id = ASR.current;
+    const was = ASR.doc?.asr?.lang || 'sr';
+    if (id == null || !(await changeAsrLang(id, e.target.value))) e.target.value = was;
+  });
   $('#asr-file').addEventListener('change', (e) => { const fs = [...e.target.files]; if (fs.length) transcribeFiles(fs); e.target.value = ''; });
   $('#asr-bg').addEventListener('click', () => $('#dlg-asr').close());
   $('#asr-pill').addEventListener('click', () => { if (ASR.current != null) $('#dlg-asr').showModal(); else showStart(); });
