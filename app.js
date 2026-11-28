@@ -2190,8 +2190,11 @@ async function docPcm() {
  * Gemini heard is offered beside the present text, to accept or not. The line's times never change. A trial
  * (28 Nov 2026): how well it hears Serbian is not measured yet.
  */
-/** A short message under line [i]'s text, where the eye is; an empty text removes it. Not a warning: gone after 6 s. */
-function lineMsg(i, text, warn = false) {
+/**
+ * A short message under line [i]'s text, where the eye is; an empty text removes it. Gone after 6 s, unless it is
+ * a warning or [keep] is set (work in progress: it stays until the next message replaces it).
+ */
+function lineMsg(i, text, warn = false, keep = false) {
   const row = rowOf(i);
   if (!row) return;
   let m = row.querySelector('.lmsg');
@@ -2204,7 +2207,7 @@ function lineMsg(i, text, warn = false) {
   m.textContent = text;
   m.classList.toggle('warn', warn);
   clearTimeout(m._timer);
-  if (!warn) m._timer = setTimeout(() => m.remove(), 6000);
+  if (!warn && !keep) m._timer = setTimeout(() => m.remove(), 6000);
 }
 
 async function gemLine(line) {
@@ -2229,12 +2232,12 @@ async function gemLine(line) {
   const docId = S.doc.id;
   // What happens is said on the line itself: the editor's message line is at the top, out of sight from a line
   // further down (the user's remark, 28 Nov 2026).
-  const say = (text, warn = false) => lineMsg(S.segs.indexOf(seg), text, warn);
+  const say = (text, warn = false, keep = false) => lineMsg(S.segs.indexOf(seg), text, warn, keep);
   const btn = rowOf(i)?.querySelector('.lgem');
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   S.gemBusy = true;
   try {
-    say(t('gemLineReading'));
+    say(t('gemLineReading'), false, true);
     const all = await docPcm();
     // a little before and after the line, as the ▶ of a line plays past its end, then half a second of silence so
     // the last word is not cut off
@@ -2242,9 +2245,10 @@ async function gemLine(line) {
     const to = Math.min(all.length, Math.ceil(((seg.end + 300) / 1000) * SAMPLE_RATE));
     const pcm = new Float32Array(to - from + SAMPLE_RATE / 2);
     pcm.set(all.subarray(from, to));
-    say(t('gemLineSending', clock(seg.start)));
+    // stays until the answer: a long line takes over ten seconds (28 Nov 2026: 11 s for a 20 s line)
+    say(t('gemLineSending', clock(seg.start)), false, true);
     let heard = await transcribeLive(g.key, pcm, { lang: docLang() });
-    if (S.doc?.id !== docId || S.segs[i] !== seg) return; // the transcript or the line changed meanwhile
+    if (S.doc?.id !== docId || S.segs[i] !== seg) { say(''); return; } // the transcript or the line changed meanwhile
     if (!heard) { say(t('gemLineEmpty'), true); return; }
     // stored in the script the transcript is written in, as the AI correction asks for
     if (scriptApplies()) heard = ai.mostlyLatin(S.segs.map((s) => s.text)) ? toLatin(heard) : toCyrillic(heard);
