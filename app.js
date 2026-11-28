@@ -6,13 +6,14 @@ import * as spk from './speakers.js';
 import { mergeTranscripts } from './merge.js';
 import { lineCopy } from './speakers.js';
 import { parseBundle, buildBundle, fingerprint, effective, loadFingerprints, importDecision, BadBundle, audioEntry } from './bundle.js';
-import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers } from './text.js';
+import { toLatin, toCyrillic, clock, toTxt, toSrt, toVtt, baseName, splitSegment, joinSegments, displayPosToStored, tagCovers, changedFrom } from './text.js';
 import * as ai from './ai.js';
 import * as store from './store.js';
 import * as hist from './history.js';
 import * as asr from './asr.js';
 import * as gemini from './gemini.js';
-import { transcribeLive } from './gemini-live.js';
+import { LiveSession, tidyHeard, isQuota } from './gemini-live.js';
+import { lineOf, sameLine, findLine, suggestionsOf, pruned, withSuggestion, withoutSuggestion } from './gemqueue.js';
 import { SAMPLE_RATE, windows, isSilent, placePieces, mergeSentences, newTranscriptId } from './speech.js';
 import { DOWNLOAD_MB, ENGINE } from './asr-model.js';
 
@@ -1038,6 +1039,7 @@ function renderLines(focusIndex = -1, caret = -1, anchor = focusIndex) {
   const anchorTop = anchor >= 0 ? rowOf(anchor)?.getBoundingClientRect().top : undefined;
   ol.replaceChildren();
   const tags = tagsOf();
+  pruneSuggestions(); // before the rows: a line edited, split or joined loses its suggestion and its mark
   for (let i = 0; i < S.segs.length; i++) ol.append(lineRow(i, tags));
   updateChips(); // before measuring: the speaker column's width changes the text boxes' width
   growAll();
@@ -1108,13 +1110,12 @@ function lineRow(i, tags) {
   // "Gemini: ovaj red", on the line it is about (the user's choice, 28 Nov 2026), only when there is a recording
   const gem = el('button', 'ljoin lgem', 'G');
   gem.type = 'button';
-  gem.title = t('gemLineHint');
-  gem.setAttribute('aria-label', t('gemLineOf', clock(s.start)));
   gem.hidden = !hasAudio();
   gem.addEventListener('click', () => gemLine(Number(li.dataset.i)));
   const acts = el('span', 'lacts');
   acts.append(gem, join);
   li.append(time, who, marks, ta, acts);
+  paintGem(i, gem); // its state: waiting, being heard, a suggestion ready, failed
   return li;
 }
 
@@ -1127,13 +1128,11 @@ const rowOf = (i) => $('#lines').children[i];
 const areaOf = (i) => rowOf(i)?.querySelector('textarea');
 
 function markChanged() {
-  const orig = S.doc?.transcript?.segments || [];
-  const same = orig.length === S.segs.length;
+  const isChanged = changedFrom(S.doc?.transcript?.segments);
   for (let i = 0; i < S.segs.length; i++) {
     const row = rowOf(i);
     if (!row) continue;
-    const changed = same && (orig[i].text !== S.segs[i].text || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end);
-    row.classList.toggle('changed', changed);
+    row.classList.toggle('changed', isChanged(S.segs[i]));
     nameLine(i, row);
   }
 }
@@ -1180,13 +1179,11 @@ function edited() {
 function onInput(i, ta) {
   S.segs[i].text = ta.value;   // stored as typed, also in Latin mode (as on the phone)
   autoGrow(ta);
-  const orig = S.doc.transcript.segments;
+  const changed = changedFrom(S.doc.transcript.segments)(S.segs[i]);
   const row = rowOf(i);
-  if (orig.length === S.segs.length) {
-    const changed = orig[i].text !== ta.value || orig[i].start !== S.segs[i].start || orig[i].end !== S.segs[i].end;
-    row.classList.toggle('changed', changed);
-    row.title = changed ? t('lineChanged') : '';
-  }
+  row.classList.toggle('changed', changed);
+  row.title = changed ? t('lineChanged') : '';
+  gemEdited(i);
   edited();
 }
 
@@ -2186,11 +2183,6 @@ async function docPcm() {
 }
 
 /**
- * The "G" of a line (or Alt+G in it): the sound of that line goes to Google with the user's own key, and what
- * Gemini heard is offered beside the present text, to accept or not. The line's times never change. A trial
- * (28 Nov 2026): how well it hears Serbian is not measured yet.
- */
-/**
  * A short message under line [i]'s text, where the eye is; an empty text removes it. Gone after 6 s, unless it is
  * a warning or [keep] is set (work in progress: it stays until the next message replaces it).
  */
@@ -2210,11 +2202,224 @@ function lineMsg(i, text, warn = false, keep = false) {
   if (!warn && !keep) m._timer = setTimeout(() => m.remove(), 6000);
 }
 
+// ---------------- Gemini: one line at a time, many in a queue
+
+/**
+ * The lines sent to Gemini ("G"), heard one after another on one connection, while the editor stays usable (the
+ * user's wish, 28 Nov 2026). Each answer is kept with its transcript as a suggestion (gemqueue.js) and the line's
+ * G turns into G● until it is reviewed. The queue itself lives only in this page: a reload ends it.
+ * [items]: {docId, start, end, base, lang}; the first is being heard while [busy] is set. [failed]: key → reason.
+ */
+const GQ = { items: [], busy: false, running: false, failed: new Map(), session: null, pcm: null, pausedUntil: 0, idleTimer: 0 };
+const gqKey = (docId, x) => `${docId}|${x.start}|${x.end}`;
+// 28 Nov 2026: past Google's tokens a minute the queue waits this long and tries the line again, once.
+const GEM_QUOTA_PAUSE_MS = 60000;
+// an idle connection is closed after this long; a new G opens another
+const GEM_IDLE_CLOSE_MS = 20000;
+
+/** Line [i]'s Gemini state: 'busy' (heard now), 'wait' (queued), 'ready' (a suggestion), 'fail' or ''. */
+function gemState(i) {
+  const seg = S.segs[i];
+  if (!S.doc || !seg) return '';
+  const k = gqKey(S.doc.id, seg);
+  const at = GQ.items.findIndex((x) => gqKey(x.docId, x) === k);
+  if (at === 0 && GQ.busy) return 'busy';
+  if (at >= 0) return 'wait';
+  if (suggestionsOf(S.doc).some((x) => sameLine(x, seg))) return 'ready';
+  return GQ.failed.has(k) ? 'fail' : '';
+}
+
+/** Line [i]'s G button as its state. */
+function paintGem(i, btn = rowOf(i)?.querySelector('.lgem')) {
+  if (!btn) return;
+  const st = gemState(i);
+  btn.textContent = { busy: 'G…', wait: 'G·', ready: 'G●', fail: 'G!' }[st] ?? 'G';
+  btn.className = `ljoin lgem${st ? ` ${st}` : ''}`;
+  const at = clock(S.segs[i].start);
+  const why = st === 'fail' ? GQ.failed.get(gqKey(S.doc.id, S.segs[i])) : '';
+  btn.title = st ? t(`gemState_${st}`, why) : t('gemLineHint');
+  btn.setAttribute('aria-label', st ? `${t(`gemState_${st}`, why)} (${at})` : t('gemLineOf', at));
+}
+
+/** The line of the open transcript that [x] is about (by its times: its text may have changed), repainted. */
+function paintItem(x) {
+  if (S.doc?.id !== x.docId) return;
+  const i = S.segs.findIndex((s) => s.start === x.start && s.end === x.end);
+  if (i >= 0) paintGem(i);
+}
+
+/**
+ * Line [i] was typed in: a suggestion or a failure for its old text goes, and so does its place in the queue (a
+ * line being heard right now is let finish; its answer is then dropped as the text no longer matches).
+ */
+function gemEdited(i) {
+  const seg = S.segs[i];
+  const k = gqKey(S.doc.id, seg);
+  const had = GQ.failed.delete(k);
+  const before = GQ.items.length;
+  GQ.items = GQ.items.filter((x, at) => (at === 0 && GQ.busy) || gqKey(x.docId, x) !== k);
+  if (suggestionsOf(S.doc).length) pruneSuggestions();
+  else if (had || before !== GQ.items.length) updateGemCount();
+  paintGem(i);
+}
+
+/** "Gemini: čeka 2 · spremno 3 ›" in the player bar, for the open transcript; hidden when there is nothing. */
+function updateGemCount() {
+  const b = $('#gem-count');
+  if (!b) return;
+  const id = S.doc?.id;
+  const wait = id == null ? 0 : GQ.items.filter((x) => x.docId === id).length;
+  const ready = id == null ? 0 : suggestionsOf(S.doc).length;
+  b.hidden = !wait && !ready;
+  const paused = GQ.pausedUntil > Date.now() && wait;
+  b.textContent = paused ? t('gemCountPaused', wait, ready) : !ready ? t('gemCountWait', wait) : wait ? t('gemCount', wait, ready) : t('gemCountReady', ready);
+  b.disabled = !ready;
+}
+
+/** Suggestions whose lines were edited, split or joined go (and are saved so); the marks and the counter follow. */
+function pruneSuggestions() {
+  if (!S.doc) return;
+  const kept = pruned(suggestionsOf(S.doc), S.segs);
+  if (kept) { S.doc.gemSuggest = kept; saveNow(); }
+  updateGemCount();
+}
+
+/** The samples of transcript [id]: the open one's are kept (docPcm), another's decoded once for the queue. */
+async function pcmOf(id) {
+  if (S.doc?.id === id) return docPcm();
+  if (GQ.pcm?.id === id) return GQ.pcm.data;
+  const data = await asr.decodeAudio(await store.getAudio(id));
+  GQ.pcm = { id, data };
+  return data;
+}
+
+/**
+ * The samples of [seg] to hear: a little before and after the line, as the ▶ of a line plays past its end, then
+ * half a second of silence so the last word is not cut off.
+ */
+function lineClip(all, seg) {
+  const from = Math.max(0, Math.floor(((seg.start - 150) / 1000) * SAMPLE_RATE));
+  const to = Math.min(all.length, Math.ceil(((seg.end + 300) / 1000) * SAMPLE_RATE));
+  const pcm = new Float32Array(Math.max(0, to - from) + SAMPLE_RATE / 2);
+  pcm.set(all.subarray(from, to));
+  return pcm;
+}
+
+/** The transcript of [id] and its lines as they are now: the open one from the editor, another from storage. */
+async function docNow(id) {
+  if (S.doc?.id === id) return { doc: S.doc, segs: S.segs, open: true };
+  const doc = await store.getDoc(id);
+  return doc ? { doc, segs: effective(doc.transcript), open: false } : null;
+}
+
+/**
+ * Hears queued line [x] and keeps what came back. Returns 'ready', 'same' (Gemini heard what is written), 'gone'
+ * (the line or its transcript changed or went meanwhile) or throws.
+ */
+async function hearQueued(x, key) {
+  const before = await docNow(x.docId);
+  if (!before || findLine(before.segs, x) < 0) return 'gone';
+  const pcm = lineClip(await pcmOf(x.docId), x);
+  if (!GQ.session || GQ.session.key !== key || GQ.session.lang !== x.lang) {
+    GQ.session?.close();
+    GQ.session = new LiveSession(key, { lang: x.lang });
+  }
+  let heard = tidyHeard(await GQ.session.hear(pcm));
+  const now = await docNow(x.docId);
+  if (!now || findLine(now.segs, x) < 0) return 'gone';
+  if (!heard) throw new Error(t('gemLineEmpty'));
+  // stored in the script the transcript is written in, as the AI correction asks for
+  if (x.lang !== 'en') heard = ai.mostlyLatin(now.segs.map((s) => s.text)) ? toLatin(heard) : toCyrillic(heard);
+  const same = (v) => v.trim().replace(/\s+/g, ' ');
+  if (same(heard) === same(x.base)) return 'same';
+  now.doc.gemSuggest = withSuggestion(suggestionsOf(now.doc), { start: x.start, end: x.end, base: x.base, heard });
+  if (now.open) await saveNow();
+  else { now.doc.savedAt = Date.now(); await store.putDoc(now.doc); }
+  return 'ready';
+}
+
+/** Works through the queue, one line at a time; started by every G, a no-op while it runs. */
+async function pumpGem() {
+  if (GQ.running) return;
+  GQ.running = true;
+  clearTimeout(GQ.idleTimer);
+  try {
+    while (GQ.items.length) {
+      const x = GQ.items[0];
+      const g = gemini.loadSettings();
+      if (!g) { // the key was removed meanwhile: what waits cannot be heard
+        for (const y of GQ.items.splice(0)) { GQ.failed.set(gqKey(y.docId, y), t('gemNoKey')); paintItem(y); }
+        break;
+      }
+      GQ.busy = true;
+      paintItem(x);
+      updateGemCount();
+      let outcome;
+      try {
+        outcome = await hearQueued(x, g.key);
+      } catch (e) {
+        console.error(e);
+        GQ.session?.close();
+        GQ.session = null;
+        if (isQuota(e) && !x.retried) {
+          // too much at once for the free tier: wait, then the same line once more
+          x.retried = true;
+          GQ.busy = false;
+          GQ.pausedUntil = Date.now() + GEM_QUOTA_PAUSE_MS;
+          paintItem(x);
+          updateGemCount();
+          while (Date.now() < GQ.pausedUntil && GQ.items.includes(x)) await new Promise((r) => setTimeout(r, 500));
+          GQ.pausedUntil = 0;
+          continue;
+        }
+        outcome = { fail: e?.message || String(e) };
+      }
+      const at = GQ.items.indexOf(x);
+      if (at >= 0) GQ.items.splice(at, 1);
+      GQ.busy = false;
+      const k = gqKey(x.docId, x);
+      if (outcome?.fail) GQ.failed.set(k, outcome.fail);
+      else GQ.failed.delete(k);
+      paintItem(x);
+      updateGemCount();
+      if (S.doc?.id === x.docId) {
+        const i = findLine(S.segs, x);
+        if (i >= 0 && outcome === 'same') lineMsg(i, t('gemLineSame'));
+        if (i >= 0 && outcome?.fail) lineMsg(i, t('gemLineFailed', outcome.fail), true);
+      }
+    }
+  } finally {
+    GQ.running = false;
+    GQ.busy = false;
+    updateGemCount();
+    GQ.idleTimer = setTimeout(() => { if (!GQ.running) { GQ.session?.close(); GQ.session = null; GQ.pcm = null; } }, GEM_IDLE_CLOSE_MS);
+  }
+}
+
+/**
+ * The "G" of a line (or Alt+G in it). By state: a plain G sends the line's sound to Google (with the user's own
+ * key) and goes on; a waiting one (G·) is taken out of the queue; G● opens the suggestion; G! tries again.
+ * A trial (28 Nov 2026): how well it hears Serbian is not measured yet.
+ */
 async function gemLine(line) {
-  if (!S.doc || S.gemBusy) return;
-  const i = Number.isInteger(line) ? line : S.focused >= 0 ? S.focused : S.current;
+  if (!S.doc) return;
+  const byButton = Number.isInteger(line);
+  const i = byButton ? line : S.focused >= 0 ? S.focused : S.current;
   if (i < 0 || !S.segs[i]) { flash(t('gemLineNoLine'), true); return; }
   if (!hasAudio()) { flash(t('gemLineNoAudio'), true); return; }
+  const seg = S.segs[i];
+  const st = gemState(i);
+  if (st === 'ready') { reviewSuggestion(i); return; }
+  if (st === 'busy') { lineMsg(i, t('gemState_busy')); return; }
+  if (st === 'wait') {
+    if (!byButton) { lineMsg(i, t('gemState_wait')); return; }
+    const k = gqKey(S.doc.id, seg);
+    GQ.items = GQ.items.filter((x) => gqKey(x.docId, x) !== k);
+    paintGem(i);
+    updateGemCount();
+    lineMsg(i, t('gemLineUnqueued'));
+    return;
+  }
   const g = gemini.loadSettings();
   if (!g) {
     // no key yet: the settings open with the cursor already in the key field, and a line saying why
@@ -2228,85 +2433,93 @@ async function gemLine(line) {
     prefs.gemAudioOk = true;
     savePrefs();
   }
-  const seg = S.segs[i];
-  const docId = S.doc.id;
-  // What happens is said on the line itself: the editor's message line is at the top, out of sight from a line
-  // further down (the user's remark, 28 Nov 2026).
-  const say = (text, warn = false, keep = false) => lineMsg(S.segs.indexOf(seg), text, warn, keep);
-  const btn = rowOf(i)?.querySelector('.lgem');
-  if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  S.gemBusy = true;
-  try {
-    say(t('gemLineReading'), false, true);
-    const all = await docPcm();
-    // a little before and after the line, as the ▶ of a line plays past its end, then half a second of silence so
-    // the last word is not cut off
-    const from = Math.max(0, Math.floor(((seg.start - 150) / 1000) * SAMPLE_RATE));
-    const to = Math.min(all.length, Math.ceil(((seg.end + 300) / 1000) * SAMPLE_RATE));
-    const pcm = new Float32Array(to - from + SAMPLE_RATE / 2);
-    pcm.set(all.subarray(from, to));
-    // stays until the answer: a long line takes over ten seconds (28 Nov 2026: 11 s for a 20 s line)
-    say(t('gemLineSending', clock(seg.start)), false, true);
-    let heard = await transcribeLive(g.key, pcm, { lang: docLang() });
-    if (S.doc?.id !== docId || S.segs[i] !== seg) { say(''); return; } // the transcript or the line changed meanwhile
-    if (!heard) { say(t('gemLineEmpty'), true); return; }
-    // stored in the script the transcript is written in, as the AI correction asks for
-    if (scriptApplies()) heard = ai.mostlyLatin(S.segs.map((s) => s.text)) ? toLatin(heard) : toCyrillic(heard);
-    const same = (x) => x.trim().replace(/\s+/g, ' ');
-    if (same(heard) === same(seg.text)) { say(t('gemLineSame')); return; }
-    const d = $('#dlg-gem-line');
-    $('#gem-line-title').textContent = t('gemLineTitle', clock(seg.start));
-    // the line can be heard here, as often as needed, while deciding what to take (the user's wish, 28 Nov 2026)
-    $('#gem-line-play').replaceChildren(clipButton(seg.start, seg.end, clock(seg.start)));
-    d.addEventListener('close', stopClip, { once: true });
-    $('#gem-line-now').textContent = display(seg.text);
-    // Every change is a switch, all on to begin with: a person checks the suggestion and may take only part of it
-    // (the user's wish, 28 Nov 2026). The parts are of the stored text; they are shown in the script on screen.
-    const parts = ai.changeParts(seg.text, heard);
-    const accepted = parts.filter((p) => !('same' in p)).map(() => true);
-    const result = () => ai.applyParts(parts, accepted);
-    const accept = $('#gem-line-accept');
-    const refresh = () => {
-      $('#gem-line-result').textContent = display(result());
-      accept.disabled = !accepted.some(Boolean);
-    };
-    const body = $('#gem-line-new');
-    body.replaceChildren();
-    let k = 0;
-    for (const p of parts) {
-      if ('same' in p) { body.append(el('span', '', display(p.same)), document.createTextNode(' ')); continue; }
-      const n = k++;
-      const b = el('button', 'chg');
-      b.type = 'button';
-      if (p.removed) b.append(el('del', '', display(p.removed)));
-      if (p.removed && p.added) b.append(document.createTextNode(' '));
-      if (p.added) b.append(el('ins', '', display(p.added)));
-      const label = () => {
-        b.setAttribute('aria-pressed', String(accepted[n]));
-        b.setAttribute('aria-label', accepted[n] ? t('gemLineChangeOn', display(p.removed), display(p.added)) : t('gemLineChangeOff', display(p.removed)));
-      };
-      b.addEventListener('click', () => { accepted[n] = !accepted[n]; label(); refresh(); });
-      label();
-      body.append(b, document.createTextNode(' '));
-    }
-    refresh();
-    accept.onclick = () => {
-      d.close();
-      if (S.doc?.id !== docId || S.segs[i] !== seg) return;
-      seg.text = accepted.every(Boolean) ? heard : result();
-      edited();
-      renderLines(i);
-      say(t('gemLineDone'));
-    };
-    say('');
-    d.showModal();
-  } catch (e) {
-    console.error(e);
-    say(t('gemLineFailed', e?.message || String(e)), true);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'G'; }
-    S.gemBusy = false;
+  if (S.segs[i] !== seg || gemState(i) !== st) return; // changed while the question was open
+  GQ.failed.delete(gqKey(S.doc.id, seg));
+  GQ.items.push({ docId: S.doc.id, ...lineOf(seg), lang: docLang() });
+  paintGem(i);
+  updateGemCount();
+  pumpGem();
+}
+
+/** The open transcript's next line with a suggestion, after the one with the cursor (from the top after the last). */
+function nextSuggestion() {
+  const n = S.segs.length;
+  const from = S.focused >= 0 ? S.focused : -1;
+  for (let k = 1; k <= n; k++) {
+    const i = (from + k + n) % n;
+    if (gemState(i) === 'ready') return i;
   }
+  return -1;
+}
+
+/**
+ * Gemini's suggestion for line [i] beside the present text: every change a switch, all on to begin with, so a
+ * person who checks it may take only part (the user's wish, 28 Nov 2026). Prihvati applies it, Odbaci throws it
+ * away, closing keeps it for later. The line's times never change.
+ */
+function reviewSuggestion(i) {
+  const seg = S.segs[i];
+  const sug = suggestionsOf(S.doc).find((x) => sameLine(x, seg));
+  if (!sug) return;
+  const docId = S.doc.id;
+  const heard = sug.heard;
+  const d = $('#dlg-gem-line');
+  if (d.open) return;
+  $('#gem-line-title').textContent = t('gemLineTitle', clock(seg.start));
+  // the line can be heard here, as often as needed, while deciding what to take (the user's wish, 28 Nov 2026)
+  $('#gem-line-play').replaceChildren(clipButton(seg.start, seg.end, clock(seg.start)));
+  d.addEventListener('close', stopClip, { once: true });
+  $('#gem-line-now').textContent = display(seg.text);
+  // the parts are of the stored text; they are shown in the script on screen
+  const parts = ai.changeParts(seg.text, heard);
+  const accepted = parts.filter((p) => !('same' in p)).map(() => true);
+  const result = () => ai.applyParts(parts, accepted);
+  const accept = $('#gem-line-accept');
+  const refresh = () => {
+    $('#gem-line-result').textContent = display(result());
+    accept.disabled = !accepted.some(Boolean);
+  };
+  const body = $('#gem-line-new');
+  body.replaceChildren();
+  let n = 0;
+  for (const p of parts) {
+    if ('same' in p) { body.append(el('span', '', display(p.same)), document.createTextNode(' ')); continue; }
+    const at = n++;
+    const b = el('button', 'chg');
+    b.type = 'button';
+    if (p.removed) b.append(el('del', '', display(p.removed)));
+    if (p.removed && p.added) b.append(document.createTextNode(' '));
+    if (p.added) b.append(el('ins', '', display(p.added)));
+    const aria = () => {
+      b.setAttribute('aria-pressed', String(accepted[at]));
+      b.setAttribute('aria-label', accepted[at] ? t('gemLineChangeOn', display(p.removed), display(p.added)) : t('gemLineChangeOff', display(p.removed)));
+    };
+    b.addEventListener('click', () => { accepted[at] = !accepted[at]; aria(); refresh(); });
+    aria();
+    body.append(b, document.createTextNode(' '));
+  }
+  refresh();
+  const still = () => S.doc?.id === docId && S.segs[i] === seg && sameLine(sug, seg);
+  const forget = () => { S.doc.gemSuggest = withoutSuggestion(suggestionsOf(S.doc), seg); };
+  accept.onclick = () => {
+    d.close();
+    if (!still()) return;
+    forget();
+    seg.text = accepted.every(Boolean) ? heard : result();
+    edited();
+    renderLines(i);
+    lineMsg(i, t('gemLineDone'));
+  };
+  $('#gem-line-drop').onclick = () => {
+    d.close();
+    if (!still()) return;
+    forget();
+    saveNow();
+    paintGem(i);
+    updateGemCount();
+    lineMsg(i, t('gemLineDropped'));
+  };
+  d.showModal();
 }
 
 // ------------------------------------------------------------------ wiring
@@ -2317,6 +2530,12 @@ function wire() {
   $('#dlg-asr').addEventListener('cancel', (e) => e.preventDefault());
   $('#asr-stop').addEventListener('click', stopAsr);
   $('#merge-open').addEventListener('click', openMerge);
+  $('#gem-count').addEventListener('click', () => {
+    const i = nextSuggestion();
+    if (i < 0) return;
+    focusLine(i);
+    reviewSuggestion(i);
+  });
   $('#asr-lang-dlg').addEventListener('change', async (e) => {
     const id = ASR.current;
     const was = ASR.doc?.asr?.lang || 'sr';
@@ -2326,7 +2545,7 @@ function wire() {
   $('#asr-bg').addEventListener('click', () => $('#dlg-asr').close());
   $('#asr-pill').addEventListener('click', () => { if (ASR.current != null) $('#dlg-asr').showModal(); else showStart(); });
   // Closing the tab ends a run; what is done is kept, but warn first.
-  window.addEventListener('beforeunload', (e) => { if (ASR.current != null || ASR.queue.length) { e.preventDefault(); e.returnValue = ''; } });
+  window.addEventListener('beforeunload', (e) => { if (ASR.current != null || ASR.queue.length || GQ.items.length) { e.preventDefault(); e.returnValue = ''; } });
   $('#asr-delete-model').addEventListener('click', deleteModel);
   $('#asr-lang').addEventListener('change', (e) => { prefs.asrLang = e.target.value; savePrefs(); });
   for (const box of [$('#asr-gentle'), $('#asr-gentle-dlg')]) {

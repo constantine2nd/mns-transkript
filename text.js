@@ -180,6 +180,18 @@ export function splitSegment(seg, pos) {
   ];
 }
 
+/**
+ * Tells whether a line differs from the machine's [original] lines: true unless one of them has the same start,
+ * end and text. By times and text, not by place: after a join or a split the places shift, and comparing by place
+ * marked nothing at all once the counts differed (28 Nov 2026: Milica 2, 249 lines from 258, showed no marks).
+ * A joined or split line counts as changed; the lines around it do not.
+ */
+export function changedFrom(original) {
+  const key = (s) => `${s.start}|${s.end}|${s.text}`;
+  const known = new Set((original || []).map(key));
+  return (seg) => !known.has(key(seg));
+}
+
 /** Joins a segment with the next one: earliest start, latest end, texts joined by one space; the first one's speaker. */
 export function joinSegments(a, b) {
   const parts = [a.text.replace(/\s+$/u, ''), b.text.replace(/^\s+/u, '')].filter((t) => t.length > 0);

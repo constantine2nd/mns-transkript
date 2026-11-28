@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="sr-Latn" data-v="2.6.3 · 2026-11-28">
+<html lang="sr-Latn" data-v="2.7.0 · 2026-11-28">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -119,6 +119,7 @@
         <button id="script-lat" class="btn small" type="button" data-i18n="latin"></button>
         <button id="script-cyr" class="btn small" type="button" data-i18n="cyrillic"></button>
       </span>
+      <button id="gem-count" class="btn small" type="button" hidden></button>
       <button id="help" class="btn small ghost" type="button" data-i18n="help"></button>
       <audio id="audio" preload="metadata"></audio>
     </div>
@@ -147,7 +148,8 @@
     <p class="muted small" data-i18n="gemLineResult"></p>
     <p id="gem-line-result"></p>
     <div class="dlg-actions">
-      <button class="btn ghost" type="button" data-close data-i18n="cancel"></button>
+      <button class="btn ghost" type="button" data-close data-i18n="gemLineLater"></button>
+      <button id="gem-line-drop" class="btn" type="button" data-i18n="gemLineDrop"></button>
       <button id="gem-line-accept" class="btn primary" type="button" data-i18n="gemLineAccept"></button>
     </div>
   </dialog>
