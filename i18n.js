@@ -263,7 +263,7 @@ export const STRINGS = {
     asrDoneOf: 'Transkripcija je gotova: „{0}“, {1} redova. Otvara se iz liste.',
     asrStopping: 'Zaustavljam posle ovog dela…',
     asrDone: 'Transkripcija je gotova: {0} redova',
-    asrUnfinished: 'nedovršeno {0}%',
+    asrUnfinished: 'prekinuto na {0}%',
     asrResume: 'Nastavi transkripciju',
     asrFailed: 'Transkripcija nije uspela: {0}',
     asrRetry: 'Veza je prekinuta; pokušavam ponovo ({0}. put)…',
