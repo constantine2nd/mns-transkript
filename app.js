@@ -12,6 +12,7 @@ import * as store from './store.js';
 import * as hist from './history.js';
 import * as asr from './asr.js';
 import * as gemini from './gemini.js';
+import { transcribeLive } from './gemini-live.js';
 import { SAMPLE_RATE, windows, isSilent, placePieces, mergeSentences, newTranscriptId } from './speech.js';
 import { DOWNLOAD_MB, ENGINE } from './asr-model.js';
 
@@ -1062,9 +1063,20 @@ function lineRow(i, tags) {
   li.dataset.i = i;
   const time = el('button', 'ltime', clock(s.start));
   time.type = 'button';
-  time.title = t('playLine');
-  time.setAttribute('aria-label', t('playFrom', clock(s.start)));
-  time.addEventListener('click', () => playFrom(i));
+  // The time plays this line only and stops at its end (the user's wish, 28 Nov 2026); playing on from a line is
+  // Ctrl+R or the player. Pressed again while it plays, it stops.
+  time.dataset.label = clock(s.start);
+  time.title = t('clipPlay', clock(s.start));
+  time.setAttribute('aria-label', time.title);
+  time.setAttribute('aria-pressed', 'false');
+  time.addEventListener('click', () => {
+    const k = Number(li.dataset.i);
+    const seg = S.segs[k];
+    if (!seg) return;
+    S.focused = k;
+    if (!hasAudio()) { focusLine(k, 0); return; }
+    toggleClip(seg.start, seg.end, time);
+  });
   const who = el('button', 'lspk');
   who.type = 'button';
   who.addEventListener('click', () => openSpeakerMenu(Number(li.dataset.i), who));
@@ -1093,7 +1105,16 @@ function lineRow(i, tags) {
   join.setAttribute('aria-label', t('joinNext'));
   join.hidden = i === S.segs.length - 1;
   join.addEventListener('click', () => joinAt(i));
-  li.append(time, who, marks, ta, join);
+  // "Gemini: ovaj red", on the line it is about (the user's choice, 28 Nov 2026), only when there is a recording
+  const gem = el('button', 'ljoin lgem', 'G');
+  gem.type = 'button';
+  gem.title = t('gemLineHint');
+  gem.setAttribute('aria-label', t('gemLineOf', clock(s.start)));
+  gem.hidden = !hasAudio();
+  gem.addEventListener('click', () => gemLine(Number(li.dataset.i)));
+  const acts = el('span', 'lacts');
+  acts.append(gem, join);
+  li.append(time, who, marks, ta, acts);
   return li;
 }
 
@@ -1389,7 +1410,7 @@ function toggleClip(startMs, endMs, btn) {
   if (clip?.btn === btn && !a.paused) { a.pause(); return; } // the pause event ends the clip
   endClip();
   clip = { end: endMs + CLIP_TAIL_MS, btn };
-  btn.textContent = `■ ${btn.dataset.label}`;
+  if (!btn.classList.contains('ltime')) btn.textContent = `■ ${btn.dataset.label}`; // a line's time keeps its text
   btn.setAttribute('aria-label', t('clipStop', btn.dataset.label));
   btn.setAttribute('aria-pressed', 'true');
   a.currentTime = startMs / 1000;
@@ -1401,7 +1422,7 @@ function endClip() {
   if (!clip) return;
   const b = clip.btn;
   clip = null;
-  b.textContent = `▶ ${b.dataset.label}`;
+  if (!b.classList.contains('ltime')) b.textContent = `▶ ${b.dataset.label}`;
   b.setAttribute('aria-label', t('clipPlay', b.dataset.label));
   b.setAttribute('aria-pressed', 'false');
 }
@@ -2117,7 +2138,13 @@ function setLatin(on) {
   prefs.latin = on;
   savePrefs();
   updateScriptButtons();
-  if (S.doc) renderLines(S.focused);
+  if (!S.doc) return;
+  // The view stays where it is: the first line on screen keeps its place. It used to jump to the line last worked
+  // in (S.focused is remembered after the cursor leaves it), wherever the user had scrolled to since.
+  const top = ($('.player')?.getBoundingClientRect().bottom ?? 0);
+  const rows = [...$('#lines').children];
+  const first = rows.findIndex((r) => r.getBoundingClientRect().bottom > top);
+  renderLines(-1, -1, first);
 }
 
 // ------------------------------------------------------------------ global keys
@@ -2139,10 +2166,114 @@ function onGlobalKey(e) {
   if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveVersion(); return; }
   if ((mod && (e.code === 'Space' || e.key === ' ')) || (e.key === 'Escape' && !mod)) { e.preventDefault(); togglePlay(); return; }
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveLine(e.key === 'ArrowUp' ? -1 : 1); return; }
+  if (e.altKey && !mod && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); gemLine(); return; }
   if (mod && (e.key === 'r' || e.key === 'R') && !e.shiftKey) {
     e.preventDefault();
     const i = S.focused >= 0 ? S.focused : S.current;
     if (i >= 0) playFrom(i);
+  }
+}
+
+// ---------------- one line through Gemini's speech-to-text (gemini-live.js)
+
+/** The open recording as 16 kHz mono samples, decoded on first use and kept while this transcript stays open. */
+async function docPcm() {
+  const id = S.doc.id;
+  if (S.pcm?.id === id) return S.pcm.data;
+  const data = await asr.decodeAudio(await store.getAudio(id));
+  S.pcm = { id, data };
+  return data;
+}
+
+/**
+ * The "G" of a line (or Alt+G in it): the sound of that line goes to Google with the user's own key, and what
+ * Gemini heard is offered beside the present text, to accept or not. The line's times never change. A trial
+ * (28 Nov 2026): how well it hears Serbian is not measured yet.
+ */
+/** A short message under line [i]'s text, where the eye is; an empty text removes it. Not a warning: gone after 6 s. */
+function lineMsg(i, text, warn = false) {
+  const row = rowOf(i);
+  if (!row) return;
+  let m = row.querySelector('.lmsg');
+  if (!text) { m?.remove(); return; }
+  if (!m) {
+    m = el('span', 'lmsg');
+    m.setAttribute('role', 'status');
+    row.append(m);
+  }
+  m.textContent = text;
+  m.classList.toggle('warn', warn);
+  clearTimeout(m._timer);
+  if (!warn) m._timer = setTimeout(() => m.remove(), 6000);
+}
+
+async function gemLine(line) {
+  if (!S.doc || S.gemBusy) return;
+  const i = Number.isInteger(line) ? line : S.focused >= 0 ? S.focused : S.current;
+  if (i < 0 || !S.segs[i]) { flash(t('gemLineNoLine'), true); return; }
+  if (!hasAudio()) { flash(t('gemLineNoAudio'), true); return; }
+  const g = gemini.loadSettings();
+  if (!g) {
+    // no key yet: the settings open with the cursor already in the key field, and a line saying why
+    openSettings();
+    showMsg($('#gem-msg'), t('gemNoKeyTyped'));
+    $('#gem-key').focus();
+    return;
+  }
+  if (!prefs.gemAudioOk) {
+    if (!(await confirmBox(t('gemAudioTitle'), t('gemAudioText'), t('gemAudioOk')))) return;
+    prefs.gemAudioOk = true;
+    savePrefs();
+  }
+  const seg = S.segs[i];
+  const docId = S.doc.id;
+  // What happens is said on the line itself: the editor's message line is at the top, out of sight from a line
+  // further down (the user's remark, 28 Nov 2026).
+  const say = (text, warn = false) => lineMsg(S.segs.indexOf(seg), text, warn);
+  const btn = rowOf(i)?.querySelector('.lgem');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  S.gemBusy = true;
+  try {
+    say(t('gemLineReading'));
+    const all = await docPcm();
+    // a little before and after the line, as the ▶ of a line plays past its end, then half a second of silence so
+    // the last word is not cut off
+    const from = Math.max(0, Math.floor(((seg.start - 150) / 1000) * SAMPLE_RATE));
+    const to = Math.min(all.length, Math.ceil(((seg.end + 300) / 1000) * SAMPLE_RATE));
+    const pcm = new Float32Array(to - from + SAMPLE_RATE / 2);
+    pcm.set(all.subarray(from, to));
+    say(t('gemLineSending', clock(seg.start)));
+    let heard = await transcribeLive(g.key, pcm, { lang: docLang() });
+    if (S.doc?.id !== docId || S.segs[i] !== seg) return; // the transcript or the line changed meanwhile
+    if (!heard) { say(t('gemLineEmpty'), true); return; }
+    // stored in the script the transcript is written in, as the AI correction asks for
+    if (scriptApplies()) heard = ai.mostlyLatin(S.segs.map((s) => s.text)) ? toLatin(heard) : toCyrillic(heard);
+    const same = (x) => x.trim().replace(/\s+/g, ' ');
+    if (same(heard) === same(seg.text)) { say(t('gemLineSame')); return; }
+    const d = $('#dlg-gem-line');
+    $('#gem-line-title').textContent = t('gemLineTitle', clock(seg.start));
+    $('#gem-line-now').textContent = display(seg.text);
+    const body = $('#gem-line-new');
+    body.replaceChildren();
+    for (const w of ai.diff(display(seg.text), display(heard))) {
+      body.append(el(w.kind === 'removed' ? 'del' : w.kind === 'added' ? 'ins' : 'span', '', w.text), document.createTextNode(' '));
+    }
+    $('#gem-line-accept').onclick = () => {
+      d.close();
+      if (S.doc?.id !== docId || S.segs[i] !== seg) return;
+      seg.text = heard;
+      edited();
+      renderLines(i);
+      say(t('gemLineDone'));
+    };
+    say('');
+    d.showModal();
+  } catch (e) {
+    console.error(e);
+    say(t('gemLineFailed', e?.message || String(e)), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'G'; }
+    S.gemBusy = false;
   }
 }
 

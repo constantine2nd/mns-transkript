@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="sr-Latn" data-v="2.5 · 2026-11-27">
+<html lang="sr-Latn" data-v="2.6 · 2026-11-28">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com wss://generativelanguage.googleapis.com; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#ffc11b">
   <title>Moj Novi Sad — Transkript</title>
@@ -134,6 +134,18 @@
     <h2 id="confirm-title"></h2>
     <p id="confirm-text"></p>
     <div class="dlg-actions" id="confirm-actions"></div>
+  </dialog>
+
+  <dialog id="dlg-gem-line" class="dlg wide" aria-labelledby="gem-line-title">
+    <h2 id="gem-line-title"></h2>
+    <p class="muted small" data-i18n="gemLineNow"></p>
+    <p id="gem-line-now"></p>
+    <p class="muted small" data-i18n="gemLineNew"></p>
+    <p id="gem-line-new" class="diff gem-diff"></p>
+    <div class="dlg-actions">
+      <button class="btn ghost" type="button" data-close data-i18n="cancel"></button>
+      <button id="gem-line-accept" class="btn primary" type="button" data-i18n="gemLineAccept"></button>
+    </div>
   </dialog>
 
   <dialog id="dlg-merge" class="dlg wide" aria-labelledby="merge-title">

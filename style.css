@@ -258,7 +258,7 @@ input[type=checkbox] { accent-color: var(--brand-strong); width: 16px; height: 1
 
 .lines { list-style: none; margin: 10px 0 40vh; padding: 0; }
 /* Speakers (who is talking). Without any yet, the column is narrow and its "+" shows on the hovered or focused line. */
-.lines:not(.has-speakers) .line { grid-template-columns: 4.6rem 1.6rem 1.2rem 1fr 2rem; }
+.lines:not(.has-speakers) .line { grid-template-columns: 4.6rem 1.6rem 1.2rem 1fr auto; }
 .lspk {
   min-width: 0; max-width: 100%; margin-top: 3px; padding: 1px 6px 1px 8px;
   border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: 6px;
@@ -286,7 +286,7 @@ input[type=checkbox] { accent-color: var(--brand-strong); width: 16px; height: 1
 @media (max-width: 640px) { .spk-row { grid-template-columns: 1rem 1fr; } .spk-row > :nth-child(n+3) { grid-column: 2; justify-self: start; } }
 .line {
   display: grid;
-  grid-template-columns: 4.6rem 6.5rem 1.2rem 1fr 2rem;
+  grid-template-columns: 4.6rem 6.5rem 1.2rem 1fr auto;
   align-items: start;
   gap: 4px;
   padding: 3px 4px;
@@ -329,6 +329,7 @@ input[type=checkbox] { accent-color: var(--brand-strong); width: 16px; height: 1
 .ltext:hover { border-color: var(--border); }
 /* 2.4.7: the line being edited gets the same clear outline as every other control. */
 .ltext:focus { border-color: var(--border-strong); background: var(--surface); outline: 2px solid var(--focus); outline-offset: 0; box-shadow: 0 0 0 4px var(--hl); }
+.lacts { display: flex; align-items: flex-start; } /* side by side: stacked, they made every one-row line taller */
 .ljoin {
   font: inherit;
   margin-top: 4px;
@@ -341,6 +342,9 @@ input[type=checkbox] { accent-color: var(--brand-strong); width: 16px; height: 1
   cursor: pointer;
   opacity: 0;
 }
+.lgem { font-weight: 700; font-size: 0.8rem; }
+.lmsg { grid-column: 4 / -1; margin: 0 0 4px; font-size: 0.85rem; color: var(--muted); }
+.lmsg.warn { color: var(--red); }
 .line:hover .ljoin, .line:focus-within .ljoin, .ljoin:focus { opacity: 1; }
 .ljoin:hover { border-color: var(--border-strong); color: var(--text); }
 
@@ -422,12 +426,13 @@ progress { width: 100%; height: 8px; accent-color: var(--brand-strong); }
 .change-head .ltime { padding: 2px 4px; }
 .change-body { display: block; cursor: pointer; }
 .diff { margin: 4px 0 0 26px; line-height: 1.6; }
+.diff.gem-diff { margin: 0; }
 .diff del { color: var(--red); text-decoration: line-through; }
 .diff ins { text-decoration: none; font-weight: 700; color: var(--ins); }
 .diff .doubt { background: var(--brand); color: var(--on-brand); border-radius: 3px; padding: 0 2px; }
 
 @media (max-width: 640px) {
-  .line { grid-template-columns: 3.8rem 4.2rem 1rem 1fr 1.8rem; }
+  .line { grid-template-columns: 3.8rem 4.2rem 1rem 1fr auto; }
   .ljoin { opacity: 1; }
 }
 

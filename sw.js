@@ -6,7 +6,7 @@ const PREFIX = `${self.BRAND.storage}-`;
 const VERSION = `${PREFIX}${self.APP_VERSION}`;
 const SHELL = [
   './', 'index.html', 'version.js', 'theme.js', 'install.js', 'style.css', 'app.js', 'i18n.js', 'zip.js', 'bundle.js', 'ai.js', 'text.js', 'store.js', 'history.js',
-  'speech.js', 'asr.js', 'asr-model.js', 'asr-worker.js', 'opfs.js', 'gemini.js', 'docx.js', 'speakers.js', 'merge.js',
+  'speech.js', 'asr.js', 'asr-model.js', 'asr-worker.js', 'opfs.js', 'gemini.js', 'docx.js', 'speakers.js', 'merge.js', 'gemini-live.js',
   'brand.js', 'brand.css', 'manifest.webmanifest', self.BRAND.logo, ...self.BRAND.icons,
 ];
 
