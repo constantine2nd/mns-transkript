@@ -209,3 +209,35 @@ export function diff(old, neu) {
   }
   return out;
 }
+
+/**
+ * The difference between two texts as parts that can be taken one by one: a run of unchanged words
+ * {same: "…"}, or a change {removed: "…", added: "…"} (either may be ""), for a suggestion a person accepts in
+ * part. Neighbouring removed and added words form one change.
+ */
+export function changeParts(old, neu) {
+  const parts = [];
+  for (const w of diff(old, neu)) {
+    const last = parts[parts.length - 1];
+    if (w.kind === 'same') {
+      if (last && 'same' in last) last.same += ` ${w.text}`;
+      else parts.push({ same: w.text });
+    } else {
+      const c = last && !('same' in last) ? last : (parts.push({ removed: '', added: '' }), parts[parts.length - 1]);
+      const key = w.kind === 'removed' ? 'removed' : 'added';
+      c[key] += (c[key] ? ' ' : '') + w.text;
+    }
+  }
+  return parts;
+}
+
+/** The text with only the changes of [parts] whose turn in [accepted] is true (in the order of the changes). */
+export function applyParts(parts, accepted) {
+  let k = 0;
+  const out = [];
+  for (const p of parts) {
+    const text = 'same' in p ? p.same : (accepted[k++] ? p.added : p.removed);
+    if (text) out.push(text);
+  }
+  return out.join(' ');
+}

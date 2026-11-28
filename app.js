@@ -2252,16 +2252,44 @@ async function gemLine(line) {
     if (same(heard) === same(seg.text)) { say(t('gemLineSame')); return; }
     const d = $('#dlg-gem-line');
     $('#gem-line-title').textContent = t('gemLineTitle', clock(seg.start));
+    // the line can be heard here, as often as needed, while deciding what to take (the user's wish, 28 Nov 2026)
+    $('#gem-line-play').replaceChildren(clipButton(seg.start, seg.end, clock(seg.start)));
+    d.addEventListener('close', stopClip, { once: true });
     $('#gem-line-now').textContent = display(seg.text);
+    // Every change is a switch, all on to begin with: a person checks the suggestion and may take only part of it
+    // (the user's wish, 28 Nov 2026). The parts are of the stored text; they are shown in the script on screen.
+    const parts = ai.changeParts(seg.text, heard);
+    const accepted = parts.filter((p) => !('same' in p)).map(() => true);
+    const result = () => ai.applyParts(parts, accepted);
+    const accept = $('#gem-line-accept');
+    const refresh = () => {
+      $('#gem-line-result').textContent = display(result());
+      accept.disabled = !accepted.some(Boolean);
+    };
     const body = $('#gem-line-new');
     body.replaceChildren();
-    for (const w of ai.diff(display(seg.text), display(heard))) {
-      body.append(el(w.kind === 'removed' ? 'del' : w.kind === 'added' ? 'ins' : 'span', '', w.text), document.createTextNode(' '));
+    let k = 0;
+    for (const p of parts) {
+      if ('same' in p) { body.append(el('span', '', display(p.same)), document.createTextNode(' ')); continue; }
+      const n = k++;
+      const b = el('button', 'chg');
+      b.type = 'button';
+      if (p.removed) b.append(el('del', '', display(p.removed)));
+      if (p.removed && p.added) b.append(document.createTextNode(' '));
+      if (p.added) b.append(el('ins', '', display(p.added)));
+      const label = () => {
+        b.setAttribute('aria-pressed', String(accepted[n]));
+        b.setAttribute('aria-label', accepted[n] ? t('gemLineChangeOn', display(p.removed), display(p.added)) : t('gemLineChangeOff', display(p.removed)));
+      };
+      b.addEventListener('click', () => { accepted[n] = !accepted[n]; label(); refresh(); });
+      label();
+      body.append(b, document.createTextNode(' '));
     }
-    $('#gem-line-accept').onclick = () => {
+    refresh();
+    accept.onclick = () => {
       d.close();
       if (S.doc?.id !== docId || S.segs[i] !== seg) return;
-      seg.text = heard;
+      seg.text = accepted.every(Boolean) ? heard : result();
       edited();
       renderLines(i);
       say(t('gemLineDone'));
